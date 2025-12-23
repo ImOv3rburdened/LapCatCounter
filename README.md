@@ -1,2 +1,2 @@
 # LapCatCounter
-Count how many laps you sat in.
+Counts how many times you sat in a lap.

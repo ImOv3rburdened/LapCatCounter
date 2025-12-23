@@ -1,0 +1,20 @@
+[
+  {
+    "Author": "Not Tangy",
+    "Name": "Lap Cat Counter",
+    "Punchline": "Counts how many laps you've sat in :3",
+    "Description": "Tracks lap sits per person and prints updates to chat (plus UI stats).",
+    "InternalName": "LapCatCounter",
+    "AssemblyVersion": "1.0.19.0",
+    "TestingAssemblyVersion": null,
+    "RepoUrl": "https://github.com/ImOv3rburdened/LapCatCounter",
+    "ApplicableVersion": "any",
+    "DalamudApiLevel": 14,
+    "IsHide": false,
+    "IsTestingExclusive": false,
+    "DownloadLinkInstall": "https://github.com/ImOv3rburdened/LapCatCounter/releases/download/v1.0.19/latest.zip",
+    "DownloadLinkUpdate": "https://github.com/ImOv3rburdened/LapCatCounter/releases/download/v1.0.19/latest.zip",
+    "DownloadLinkTesting": null,
+    "LastUpdate": "0"
+  }
+]
