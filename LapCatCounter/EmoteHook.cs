@@ -1,6 +1,7 @@
 ﻿using Dalamud.Hooking;
 using Dalamud.Plugin.Services;
 using System;
+using System.Linq;
 
 namespace LapCatCounter;
 
@@ -20,7 +21,11 @@ public sealed class EmoteHook : IDisposable
     public bool HookReady { get; private set; }
 
     public ushort LastEmoteId { get; private set; }
-    public DateTime LastEmoteUtc { get; private set; } = DateTime.MinValue;
+    public ushort LastLocalInstigatorEmoteId { get; private set; }
+    public DateTime LastLocalInstigatorEmoteUtc { get; private set; } = DateTime.MinValue;
+    public ushort LastLocalTargetEmoteId { get; private set; }
+    public DateTime LastLocalTargetEmoteUtc { get; private set; } = DateTime.MinValue;
+    public ulong LastLocalTargetInstigatorObjectId { get; private set; }
 
     public EmoteHook(ISigScanner sigScanner, IGameInteropProvider interop, IObjectTable objects, IPluginLog log)
     {
@@ -51,12 +56,19 @@ public sealed class EmoteHook : IDisposable
             if (local != null)
             {
                 var instigatorObj = objects.FirstOrDefault(o => (ulong)o.Address == instigatorAddr);
+                var now = DateTime.UtcNow;
 
-                if ((instigatorObj != null && instigatorObj.GameObjectId == local.GameObjectId) ||
-                    targetId == local.GameObjectId)
+                if (instigatorObj != null && instigatorObj.GameObjectId == local.GameObjectId)
                 {
-                    LastEmoteId = emoteId;
-                    LastEmoteUtc = DateTime.UtcNow;
+                    LastLocalInstigatorEmoteId = emoteId;
+                    LastLocalInstigatorEmoteUtc = now;
+                }
+
+                if (targetId == local.GameObjectId && (instigatorObj == null || instigatorObj.GameObjectId != local.GameObjectId))
+                {
+                    LastLocalTargetEmoteId = emoteId;
+                    LastLocalTargetEmoteUtc = now;
+                    LastLocalTargetInstigatorObjectId = instigatorObj?.GameObjectId ?? 0;
                 }
             }
         }
@@ -68,11 +80,22 @@ public sealed class EmoteHook : IDisposable
         hook?.Original(unk, instigatorAddr, emoteId, targetId, unk2);
     }
 
-    public bool WasRecently(ushort emoteId, double seconds)
+    public bool WasRecentlyLocalInstigator(ushort emoteId, double seconds)
     {
         if (emoteId == 0) return false;
-        if (LastEmoteId != emoteId) return false;
-        return (DateTime.UtcNow - LastEmoteUtc).TotalSeconds <= seconds;
+        if (LastLocalInstigatorEmoteId != emoteId) return false;
+        return (DateTime.UtcNow - LastLocalInstigatorEmoteUtc).TotalSeconds <= seconds;
+    }
+
+    public bool WasRecentlyLocalTargetedByOther(ushort emoteId, double seconds, out ulong instigatorObjectId)
+    {
+        instigatorObjectId = 0;
+        if (emoteId == 0) return false;
+        if (LastLocalTargetEmoteId != emoteId) return false;
+        if ((DateTime.UtcNow - LastLocalTargetEmoteUtc).TotalSeconds > seconds) return false;
+
+        instigatorObjectId = LastLocalTargetInstigatorObjectId;
+        return true;
     }
 
     public void Dispose()

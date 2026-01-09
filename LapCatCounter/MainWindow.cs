@@ -20,6 +20,7 @@ public sealed class MainWindow : Window
     private readonly Action save;
     private readonly EmoteHook? emoteHook;
     private readonly LapCatCounterPlugin plugin;
+    private readonly LapTracker satOnYouTracker;
 
     private string search = "";
     private bool sortByLapsDesc = true;
@@ -35,11 +36,12 @@ public sealed class MainWindow : Window
     private DateTime? pendingResetAtUtc;
     private static bool resetModalOpen = true;
 
-    public MainWindow(Configuration cfg, LapTracker tracker, Action save, EmoteHook emoteHook, LapCatCounterPlugin plugin)
+    public MainWindow(Configuration cfg, LapTracker tracker, LapTracker satOnYouTracker, Action save, EmoteHook emoteHook, LapCatCounterPlugin plugin)
         : base("Lap Cat Counter")
     {
         this.cfg = cfg;
         this.tracker = tracker;
+        this.satOnYouTracker = satOnYouTracker;
         this.save = save;
         this.emoteHook = emoteHook;
         this.plugin = plugin;
@@ -144,16 +146,26 @@ public sealed class MainWindow : Window
     {
         var avail = ImGui.GetContentRegionAvail().X;
         var gap = 10f * ImGuiHelpers.GlobalScale;
-        var cardW = (avail - gap * 2) / 3f;
+        var cardW = (avail - gap) / 2f;
         var cardH = 84f * ImGuiHelpers.GlobalScale;
 
         UiWidgets.StatCard(
             id: "total",
             size: new Vector2(cardW, cardH),
-            label: "Total Laps",
+            label: "Sat in Laps",
             value: tracker.TotalLaps.ToString(CultureInfo.InvariantCulture),
             accent: new Vector4(0.78f, 0.66f, 0.98f, 1.00f),
-            footer: "All-time counted laps");
+            footer: "Times you sat on others");
+
+        ImGui.SameLine(0, gap);
+
+        UiWidgets.StatCard(
+            id: "satonyou",
+            size: new Vector2(cardW, cardH),
+            label: "Sat on You",
+            value: satOnYouTracker.TotalSatOnYou.ToString(CultureInfo.InvariantCulture),
+            accent: ImGuiColors.HealerGreen,
+            footer: "Times others sat on you");
 
         ImGui.SameLine(0, gap);
 
@@ -163,7 +175,7 @@ public sealed class MainWindow : Window
             label: "Unique People",
             value: tracker.UniquePeople.ToString(CultureInfo.InvariantCulture),
             accent: ImGuiColors.TankBlue,
-            footer: "People you’ve sat in");
+            footer: "People you’ve interacted with");
 
         ImGui.SameLine(0, gap);
 
@@ -260,7 +272,7 @@ public sealed class MainWindow : Window
             rows = rows.OrderByDescending(p => p.DisplayName, StringComparer.OrdinalIgnoreCase).ThenByDescending(p => p.LapCount).ToList();
 
         var avail = ImGui.GetContentRegionAvail();
-        using var table = ImRaii.Table("lapcat.people.table", 5,
+        using var table = ImRaii.Table("lapcat.people.table", 6,
             ImGuiTableFlags.RowBg |
             ImGuiTableFlags.BordersInnerH |
             ImGuiTableFlags.BordersOuter |
@@ -273,7 +285,8 @@ public sealed class MainWindow : Window
         ImGui.TableSetupScrollFreeze(0, 1);
         ImGui.TableSetupColumn("#", ImGuiTableColumnFlags.WidthFixed, 40 * ImGuiHelpers.GlobalScale);
         ImGui.TableSetupColumn("Name", ImGuiTableColumnFlags.WidthStretch);
-        ImGui.TableSetupColumn("Laps", ImGuiTableColumnFlags.WidthFixed, 90 * ImGuiHelpers.GlobalScale);
+        ImGui.TableSetupColumn("Sat In", ImGuiTableColumnFlags.WidthFixed, 80 * ImGuiHelpers.GlobalScale);
+        ImGui.TableSetupColumn("Sat on You", ImGuiTableColumnFlags.WidthFixed, 100 * ImGuiHelpers.GlobalScale);
         ImGui.TableSetupColumn("Last Lap", ImGuiTableColumnFlags.WidthFixed, 170 * ImGuiHelpers.GlobalScale);
         ImGui.TableSetupColumn("Actions", ImGuiTableColumnFlags.WidthFixed, 220 * ImGuiHelpers.GlobalScale);
         ImGui.TableHeadersRow();
@@ -295,11 +308,14 @@ public sealed class MainWindow : Window
             ImGui.TextUnformatted(p.LapCount.ToString(CultureInfo.InvariantCulture));
 
             ImGui.TableSetColumnIndex(3);
+            ImGui.TextUnformatted(p.SatOnYouCount.ToString(CultureInfo.InvariantCulture));
+
+            ImGui.TableSetColumnIndex(4);
             ImGui.PushStyleColor(ImGuiCol.Text, ImGuiColors.DalamudGrey2);
             ImGui.TextUnformatted(FormatLastLap(p.LastLapUtc));
             ImGui.PopStyleColor();
 
-            ImGui.TableSetColumnIndex(4);
+            ImGui.TableSetColumnIndex(5);
 
             if (UiWidgets.SmallPillButton("Copy", ImGuiColors.DalamudGrey2))
                 ImGui.SetClipboardText(p.DisplayName);
@@ -435,12 +451,14 @@ public sealed class MainWindow : Window
     {
         var sb = new StringBuilder();
         sb.AppendLine("Lap Cat Counter Totals");
-        sb.AppendLine($"Total Laps: {tracker.TotalLaps}");
+        sb.AppendLine($"Sat in laps: {tracker.TotalLaps}");
+        sb.AppendLine($"Sat on you: {satOnYouTracker.TotalSatOnYou}");
         sb.AppendLine($"Unique People: {tracker.UniquePeople}");
         sb.AppendLine();
+        sb.AppendLine("People (SatIn / SatOnYou):");
 
         foreach (var p in tracker.TopPeople(200).OrderByDescending(x => x.LapCount))
-            sb.AppendLine($"{p.DisplayName}: {p.LapCount}");
+            sb.AppendLine($"{p.DisplayName}: {p.LapCount} / {p.SatOnYouCount}");
 
         return sb.ToString();
     }
