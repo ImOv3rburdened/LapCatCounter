@@ -4,7 +4,7 @@
   "Punchline": "Counts how many laps you sit in :3",
   "Description": "Tracks lap sits per person.",
   "InternalName": "LapCatCounter",
-  "AssemblyVersion": "1.0.19.0",
+  "AssemblyVersion": "1.0.20.0",
   "ApplicableVersion": "any",
   "DalamudApiLevel": 14
 }

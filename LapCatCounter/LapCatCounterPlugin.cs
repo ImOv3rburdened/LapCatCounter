@@ -5,6 +5,7 @@ using Dalamud.Game.Gui;
 using Dalamud.Interface.Windowing;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
+using LapCatCounter;
 using System;
 using System.Linq;
 using System.Numerics;
@@ -41,10 +42,11 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
     private float debugNextLogAt = 0f;
     private const float DebugChatInterval = 1.0f;
     private const float DebugLogInterval = 0.25f;
-    private float sitGateRemaining = 0f;
-    private float sitPostDelayRemaining = 0f;
     private Vector3 lastPosForGate = Vector3.Zero;
+    private bool sitRequirementSatisfied = false;
     private bool hasLastPosForGate = false;
+    private DateTime lastSitTriggerUtc = DateTime.MinValue;
+    private const double SitTriggerWindowSeconds = 2.0;
 
     public LapCatCounterPlugin(
         IDalamudPluginInterface pluginInterface,
@@ -68,6 +70,24 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
 
         cfg = pi.GetPluginConfig() as Configuration ?? new Configuration();
         tracker = new LapTracker(cfg);
+        bool changed = false;
+
+        if (cfg.SitEmoteId == 0)
+        {
+            cfg.SitEmoteId = 50;
+            changed = true;
+        }
+        if (cfg.GroundSitEmoteId == 0)
+        {
+            cfg.GroundSitEmoteId = 52;
+            changed = true;
+        }
+
+        if (changed)
+        {
+            pi.SavePluginConfig(cfg);
+            log.Information($"[LapCatCounter] Migrated sit IDs: /sit={cfg.SitEmoteId}, /groundsit={cfg.GroundSitEmoteId}");
+        }
 
         if (cfg.RequireSitEmote && (cfg.SitEmoteId == 0 || cfg.GroundSitEmoteId == 0))
         {
@@ -85,7 +105,7 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
             }
         }
 
-        emoteHook = new EmoteHook(sigScanner, interopProvider, objects, log);
+        emoteHook = new EmoteHook(interopProvider, objects, log);
 
         window = new MainWindow(cfg, tracker, SaveConfig, emoteHook, this);
         ws.AddWindow(window);
@@ -99,7 +119,10 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
         {
             var total = tracker.TotalLaps;
             var unique = tracker.UniquePeople;
-            chat.Print($"[Lap Cat Counter] You have sat in laps a total of {total} times across {unique} people.");
+            var totalTime = UiWidgets.FormatDuration(tracker.TotalLapTime);
+            var bestTime = UiWidgets.FormatDuration(tracker.LongestLapTime);
+            chat.Print($"[Lap Cat Counter] Total laps: {total} across {unique} people. Total lap time: {totalTime}. Longest lap: {bestTime}.");
+
         })
         {
             HelpMessage = "Print your total lap count to chat"
@@ -116,7 +139,11 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
         framework.Update += OnUpdate;
     }
 
-    private void SaveConfig() => pi.SavePluginConfig(cfg);
+    private void SaveConfig()
+    {
+        tracker.WriteTimeTotalsToConfig();
+        pi.SavePluginConfig(cfg);
+    }
 
     private void OnLapDebugCommand(string cmd, string args)
     {
@@ -145,6 +172,9 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
         if (local is null)
         {
             tracker.ResetCurrent();
+            sitRequirementSatisfied = false;
+            hasLastPosForGate = false;
+
             LastDebugInfo = null;
             LastHookActive = false;
             return;
@@ -153,58 +183,66 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
         float dt = ImGui.GetIO().DeltaTime;
         if (dt <= 0) dt = 1f / 60f;
 
+        if (!cfg.RequireSitEmote)
+        {
+            sitRequirementSatisfied = false;
+            hasLastPosForGate = false;
+            tracker.ResetCurrent();
+        }
+
         lastLocalPos = local.Position;
 
         bool emoteOk = true;
+
+        var lastEmote = emoteHook.LastEmoteId;
+        var emoteAge = (DateTime.UtcNow - emoteHook.LastEmoteUtc).TotalSeconds;
 
         if (cfg.RequireSitEmote)
         {
             if (!emoteHook.HookReady)
             {
                 emoteOk = false;
-                sitGateRemaining = 0f;
-                hasLastPosForGate = false;
             }
             else
             {
-                sitGateRemaining = MathF.Max(0f, sitGateRemaining - dt);
-                sitPostDelayRemaining = MathF.Max(0f, sitPostDelayRemaining - dt);
+                bool isSitEmote = lastEmote == cfg.SitEmoteId || lastEmote == cfg.GroundSitEmoteId;
 
-                const float sitDetectWindow = 0.25f;
+                bool isNewSitTrigger =
+                    isSitEmote &&
+                    emoteHook.LastEmoteUtc != lastSitTriggerUtc &&
+                    emoteAge <= SitTriggerWindowSeconds;
 
-                bool sawSitNow =
-                    (cfg.SitEmoteId != 0 && emoteHook.WasRecently(cfg.SitEmoteId, sitDetectWindow)) ||
-                    (cfg.GroundSitEmoteId != 0 && emoteHook.WasRecently(cfg.GroundSitEmoteId, sitDetectWindow));
-
-                if (sawSitNow)
+                if (isNewSitTrigger)
                 {
-                    sitGateRemaining = cfg.EmoteHookSeconds;
-                    sitPostDelayRemaining = 0.60f;
+                    lastSitTriggerUtc = emoteHook.LastEmoteUtc;
 
-                    hasLastPosForGate = true;
+                    sitRequirementSatisfied = true;
                     lastPosForGate = local.Position;
+                    hasLastPosForGate = true;
+
+                    tracker.ResetCurrent();
                 }
 
-                if (hasLastPosForGate && sitGateRemaining > 0f)
+                if (hasLastPosForGate && sitRequirementSatisfied)
                 {
-                    const float moveCancelDist = 0.04f;
+                    const float moveCancelDist = 0.25f;
                     var moved = Vector3.Distance(local.Position, lastPosForGate);
-
                     lastPosForGate = local.Position;
 
                     if (moved > moveCancelDist)
                     {
-                        sitGateRemaining = 0f;
+                        sitRequirementSatisfied = false;
+                        hasLastPosForGate = false;
+                        tracker.ResetCurrent();
                     }
                 }
 
-                emoteOk = sitGateRemaining > 0f && sitPostDelayRemaining <= 0f;
+                emoteOk = sitRequirementSatisfied;
             }
         }
 
-        bool hookActive = emoteOk;
+        bool hookActive = !cfg.RequireSitEmote || emoteOk;
         LastHookActive = hookActive;
-
 
         var others = objects
             .OfType<IPlayerCharacter>()
@@ -221,6 +259,16 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
             chat.Print($"[Lap Cat Counter] You sat in {who}'s lap! You have sat in their lap {countOnThem} time(s).");
         }, out var dbg);
 
+        if (cfg.RequireSitEmote && sitRequirementSatisfied)
+        {
+            if (!dbg.HasValue || string.IsNullOrEmpty(dbg.Value.CandidateName))
+            {
+                sitRequirementSatisfied = false;
+                hasLastPosForGate = false;
+                tracker.ResetCurrent();
+            }
+        }
+
         LastDebugInfo = dbg;
 
         if (DebugEnabled)
@@ -230,6 +278,8 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
             if (now >= debugNextLogAt)
             {
                 debugNextLogAt = now + DebugLogInterval;
+                var dbgEmoteAge = (DateTime.UtcNow - emoteHook.LastEmoteUtc).TotalSeconds;
+                var dbgLastEmote = emoteHook.LastEmoteId;
 
                 if (dbg.HasValue)
                 {
@@ -239,7 +289,8 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
                               $"dx={d.Dx:0.00} dz={d.Dz:0.00} dy={d.Dy:0.00} " +
                               $"passR={d.PassRadius} passXY={d.PassXY} passZ={d.PassZ} " +
                               $"stable={d.StableSeconds:0.00}/{cfg.StableSecondsToCount:0.00} counted={d.CountedThisGate} " +
-                              $"reason={d.Reason}");
+                              $"reason={d.Reason} " +
+                              $" lastEmote={dbgLastEmote} age={dbgEmoteAge:0.00}s cfgSit={cfg.SitEmoteId} cfgGSit={cfg.GroundSitEmoteId}");
                 }
                 else
                 {
@@ -250,6 +301,8 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
             if (now >= debugNextChatAt)
             {
                 debugNextChatAt = now + DebugChatInterval;
+                var dbgEmoteAge = (DateTime.UtcNow - emoteHook.LastEmoteUtc).TotalSeconds;
+                var dbgLastEmote = emoteHook.LastEmoteId;
 
                 if (dbg.HasValue)
                 {
@@ -257,11 +310,12 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
                     chat.Print($"[LapDBG] hookActive={hookActive} hookReady={emoteHook.HookReady} best={d.CandidateName} " +
                                $"dist3={d.Distance3D:0.00} horizXZ={d.HorizontalXZ:0.00} dx={d.Dx:0.00} dz={d.Dz:0.00} dy={d.Dy:0.00} " +
                                $"R={cfg.Radius:0.00} XY={cfg.XYThreshold:0.00} Z=[{cfg.MinZAbove:0.00},{cfg.MaxZAbove:0.00}] " +
-                               $"pass(R/XY/Z)={d.PassRadius}/{d.PassXY}/{d.PassZ} stable={d.StableSeconds:0.0}/{cfg.StableSecondsToCount:0.0}");
+                               $"pass(R/XY/Z)={d.PassRadius}/{d.PassXY}/{d.PassZ} stable={d.StableSeconds:0.0}/{cfg.StableSecondsToCount:0.0}" +
+                               $" lastEmote={dbgLastEmote} age={dbgEmoteAge:0.00}s cfgSit={cfg.SitEmoteId} cfgGSit={cfg.GroundSitEmoteId}");
                 }
                 else
                 {
-                    chat.Print($"[LapDBG] hookActive={hookActive} gate={sitGateRemaining:0.00}s hookReady={emoteHook.HookReady} (no candidate)");
+                    chat.Print($"[LapDBG] hookActive={hookActive} hookReady={emoteHook.HookReady} (no candidate)");
                 }
             }
         }
@@ -274,6 +328,7 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
 
     public void Dispose()
     {
+        SaveConfig();
         framework.Update -= OnUpdate;
         pi.UiBuilder.Draw -= Draw;
 

@@ -4,6 +4,7 @@ using Dalamud.Interface.Colors;
 using Dalamud.Interface.Utility;
 using Dalamud.Interface.Utility.Raii;
 using Dalamud.Interface.Windowing;
+using LapCatCounter;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -134,6 +135,8 @@ public sealed class MainWindow : Window
         ImGui.SameLine();
         UiWidgets.Pill("CHAT MODE", ImGuiColors.HealerGreen);
 
+        var indentX = 14 * ImGuiHelpers.GlobalScale;
+        ImGui.SetCursorPosX(titlePos.X + indentX);
         ImGui.SetCursorPosY(titlePos.Y + 38 * ImGuiHelpers.GlobalScale);
         ImGui.PushStyleColor(ImGuiCol.Text, ImGuiColors.DalamudGrey);
         ImGui.TextUnformatted("Track laps you sit in • /lapcat to open • /lapcatcount to print totals • /lapdebug");
@@ -175,6 +178,39 @@ public sealed class MainWindow : Window
             value: current,
             accent: ImGuiColors.HealerGreen,
             footer: "Who you’re sitting on (candidate)");
+
+        ImGui.Spacing();
+
+        var avail2 = ImGui.GetContentRegionAvail().X;
+        var cardW2 = (avail2 - gap * 2) / 3f;
+
+        UiWidgets.StatCard(
+            id: "laptotal",
+            size: new Vector2(cardW2, cardH),
+            label: "Total Lap Time",
+            value: UiWidgets.FormatDuration(tracker.TotalLapTime),
+            accent: new Vector4(0.98f, 0.75f, 0.86f, 1.00f),
+            footer: "All-time time spent in laps");
+
+        ImGui.SameLine(0, gap);
+
+        UiWidgets.StatCard(
+            id: "lapcurrent",
+            size: new Vector2(cardW2, cardH),
+            label: "Current Lap",
+            value: UiWidgets.FormatDuration(tracker.CurrentLapTime),
+            accent: new Vector4(0.75f, 0.92f, 0.98f, 1.00f),
+            footer: "Uninterrupted time (this lap)");
+
+        ImGui.SameLine(0, gap);
+
+        UiWidgets.StatCard(
+            id: "lapbest",
+            size: new Vector2(cardW2, cardH),
+            label: "Longest Lap",
+            value: UiWidgets.FormatDuration(tracker.LongestLapTime),
+            accent: new Vector4(0.85f, 0.98f, 0.75f, 1.00f),
+            footer: "Your personal record");
     }
 
     private void DrawPeopleTab()
@@ -260,7 +296,7 @@ public sealed class MainWindow : Window
             rows = rows.OrderByDescending(p => p.DisplayName, StringComparer.OrdinalIgnoreCase).ThenByDescending(p => p.LapCount).ToList();
 
         var avail = ImGui.GetContentRegionAvail();
-        using var table = ImRaii.Table("lapcat.people.table", 5,
+        using var table = ImRaii.Table("lapcat.people.table", 7,
             ImGuiTableFlags.RowBg |
             ImGuiTableFlags.BordersInnerH |
             ImGuiTableFlags.BordersOuter |
@@ -276,6 +312,8 @@ public sealed class MainWindow : Window
         ImGui.TableSetupColumn("Laps", ImGuiTableColumnFlags.WidthFixed, 90 * ImGuiHelpers.GlobalScale);
         ImGui.TableSetupColumn("Last Lap", ImGuiTableColumnFlags.WidthFixed, 170 * ImGuiHelpers.GlobalScale);
         ImGui.TableSetupColumn("Actions", ImGuiTableColumnFlags.WidthFixed, 220 * ImGuiHelpers.GlobalScale);
+        ImGui.TableSetupColumn("Lap Time", ImGuiTableColumnFlags.WidthFixed, 120 * ImGuiHelpers.GlobalScale);
+        ImGui.TableSetupColumn("Longest", ImGuiTableColumnFlags.WidthFixed, 100 * ImGuiHelpers.GlobalScale);
         ImGui.TableHeadersRow();
 
         int idx = 0;
@@ -317,6 +355,16 @@ public sealed class MainWindow : Window
                 pendingResetAtUtc = DateTime.UtcNow;
                 openResetPopupThisFrame = true;
             }
+
+            ImGui.TableSetColumnIndex(5);
+            ImGui.PushStyleColor(ImGuiCol.Text, ImGuiColors.DalamudGrey2);
+            ImGui.TextUnformatted(UiWidgets.FormatDuration(TimeSpan.FromSeconds(p.TotalLapSeconds)));
+            ImGui.PopStyleColor();
+
+            ImGui.TableSetColumnIndex(6);
+            ImGui.PushStyleColor(ImGuiCol.Text, ImGuiColors.DalamudGrey2);
+            ImGui.TextUnformatted(UiWidgets.FormatDuration(TimeSpan.FromSeconds(p.LongestLapSeconds)));
+            ImGui.PopStyleColor();
         }
     }
 
@@ -331,16 +379,13 @@ public sealed class MainWindow : Window
             cfg.RequireSitEmote = require;
             save();
         }
-
-        ImGui.Spacing();
-        ImGui.TextColored(ImGuiColors.DalamudGrey2, "Tip: IDs auto-detect on startup. Only set manually if needed.");
     }
 
     private void DrawAboutTab()
     {
         ImGui.TextUnformatted("About");
         ImGui.Separator();
-        ImGui.TextUnformatted("Lap Cat Counter counts how many laps you sit in :3");
+        ImGui.TextUnformatted("Lap Cat Counter counts how many laps you sit in and for how long :3");
     }
 
     private void DrawDebugTab()

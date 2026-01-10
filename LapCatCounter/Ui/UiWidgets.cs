@@ -191,6 +191,17 @@ internal static class UiWidgets
         return clicked;
     }
 
+    public static string FormatDuration(System.TimeSpan t)
+    {
+        if (t.TotalDays >= 1)
+            return $"{(int)t.TotalDays}d {t.Hours}h {t.Minutes}m";
+        if (t.TotalHours >= 1)
+            return $"{(int)t.TotalHours}h {t.Minutes}m {t.Seconds}s";
+        if (t.TotalMinutes >= 1)
+            return $"{t.Minutes}m {t.Seconds}s";
+        return $"{t.Seconds}s";
+    }
+
     public static void InlineKeyValue(string key, string value)
     {
         ImGui.PushStyleColor(ImGuiCol.Text, ImGuiColors.DalamudGrey);

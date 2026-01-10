@@ -1,8 +1,10 @@
 ﻿using Dalamud.Game.ClientState.Objects.SubKinds;
+using LapCatCounter;
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Numerics;
+using static LapCatCounter.Configuration;
 
 namespace LapCatCounter
 {
@@ -17,14 +19,47 @@ namespace LapCatCounter
         private float stableSeconds = 0f;
         private bool countedThisGate = false;
         private float noCandidateSeconds = 0f;
+        private DateTime? lapStartTime;
+        private bool lapActive = false;
+        private string lapSessionKey = "";
+        private float currentLapSeconds = 0f;
+        public TimeSpan CurrentLapTime => TimeSpan.FromSeconds(currentLapSeconds);
+        public TimeSpan TotalLapTime { get; private set; } = TimeSpan.Zero;
+        public TimeSpan LongestLapTime { get; private set; } = TimeSpan.Zero;
 
-        public LapTracker(Configuration cfg) => this.cfg = cfg;
+        public LapTracker(Configuration cfg)
+        {
+            this.cfg = cfg;
+            TotalLapTime = TimeSpan.FromSeconds(cfg.TotalLapSeconds);
+            LongestLapTime = TimeSpan.FromSeconds(cfg.LongestLapSeconds);
+        }
 
         public int TotalLaps => cfg.People.Values.Sum(p => p.LapCount);
         public int UniquePeople => cfg.People.Count;
 
         public int GetCountFor(string key)
             => cfg.People.TryGetValue(key, out var s) ? s.LapCount : 0;
+
+        private PersonStats GetOrCreatePerson(string key, string displayName)
+        {
+            if (!cfg.People.TryGetValue(key, out var stats))
+            {
+                stats = new PersonStats { DisplayName = displayName };
+                cfg.People[key] = stats;
+            }
+
+            // Keep the most recent name
+            if (!string.IsNullOrWhiteSpace(displayName))
+                stats.DisplayName = displayName;
+
+            return stats;
+        }
+
+        public void WriteTimeTotalsToConfig()
+        {
+            cfg.TotalLapSeconds = (long)TotalLapTime.TotalSeconds;
+            cfg.LongestLapSeconds = (long)LongestLapTime.TotalSeconds;
+        }
 
         public IReadOnlyList<Configuration.PersonStats> TopPeople(int take = 200)
         => cfg.People
@@ -40,12 +75,42 @@ namespace LapCatCounter
 
         public void ResetCurrent()
         {
+            EndLapSession();
             CurrentLapKey = "";
             CurrentLapDisplayName = "";
             candidateKey = "";
             stableSeconds = 0f;
             countedThisGate = false;
             noCandidateSeconds = 0f;
+        }
+        private void StartLapSession(string key)
+        {
+            lapActive = true;
+            lapSessionKey = key;
+            currentLapSeconds = 0f;
+        }
+
+        private void EndLapSession()
+        {
+            if (!lapActive)
+                return;
+
+            var lapDuration = TimeSpan.FromSeconds(currentLapSeconds);
+
+            if (lapDuration > LongestLapTime)
+                LongestLapTime = lapDuration;
+
+            var name = CurrentLapDisplayName ?? "";
+            var stats = GetOrCreatePerson(lapSessionKey, name);
+
+            stats.TotalLapSeconds += (long)lapDuration.TotalSeconds;
+
+            if (lapDuration.TotalSeconds > stats.LongestLapSeconds)
+                stats.LongestLapSeconds = (long)lapDuration.TotalSeconds;
+
+            lapActive = false;
+            lapSessionKey = "";
+            currentLapSeconds = 0f;
         }
 
         public void Update(
@@ -60,6 +125,7 @@ namespace LapCatCounter
 
             if (!gateActive)
             {
+                EndLapSession();
                 ResetCurrent();
                 debug = new LapDebugInfo { Reason = "gateActive=false -> ResetCurrent()" };
                 return;
@@ -109,6 +175,7 @@ namespace LapCatCounter
 
             if (best is null)
             {
+                EndLapSession();
                 noCandidateSeconds += dt;
                 if (noCandidateSeconds >= 15.0f)
                     ResetCurrent();
@@ -159,6 +226,12 @@ namespace LapCatCounter
             CurrentLapKey = bestKey;
             CurrentLapDisplayName = best.Name.TextValue;
 
+            if (!lapActive || lapSessionKey != bestKey)
+            {
+                EndLapSession();
+                StartLapSession(bestKey);
+            }
+
             if (candidateKey == bestKey)
                 stableSeconds += dt;
             else
@@ -167,6 +240,9 @@ namespace LapCatCounter
                 stableSeconds = 0f;
                 countedThisGate = false;
             }
+
+            currentLapSeconds += dt;
+            TotalLapTime += TimeSpan.FromSeconds(dt);
 
             {
                 var lp = localPos;

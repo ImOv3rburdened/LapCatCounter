@@ -1,10 +1,12 @@
-﻿using Dalamud.Hooking;
+﻿using Dalamud.Game;
+using Dalamud.Hooking;
 using Dalamud.Plugin.Services;
+using Dalamud.Utility.Signatures;
 using System;
 
 namespace LapCatCounter;
 
-public sealed class EmoteHook : IDisposable
+public sealed unsafe class EmoteHook : IDisposable
 {
     private delegate void EmoteExecuteDelegate(
         ulong unk,
@@ -15,23 +17,30 @@ public sealed class EmoteHook : IDisposable
 
     private readonly IObjectTable objects;
     private readonly IPluginLog log;
-    private readonly Hook<EmoteExecuteDelegate>? hook;
+
+    [Signature("E8 ?? ?? ?? ?? 48 8D 8B ?? ?? ?? ?? 4C 89 74 24", Fallibility = Fallibility.Fallible)]
+    private readonly nint emoteExecuteAddr = nint.Zero;
+
+    private Hook<EmoteExecuteDelegate>? hook;
 
     public bool HookReady { get; private set; }
 
     public ushort LastEmoteId { get; private set; }
     public DateTime LastEmoteUtc { get; private set; } = DateTime.MinValue;
 
-    public EmoteHook(ISigScanner sigScanner, IGameInteropProvider interop, IObjectTable objects, IPluginLog log)
+    public EmoteHook(IGameInteropProvider interop, IObjectTable objects, IPluginLog log)
     {
         this.objects = objects;
         this.log = log;
 
         try
         {
-            var addr = sigScanner.ScanText("E8 ?? ?? ?? ?? 48 8D 8B ?? ?? ?? ?? 4C 89 74 24");
+            interop.InitializeFromAttributes(this);
 
-            hook = interop.HookFromAddress<EmoteExecuteDelegate>(addr, OnEmoteDetour);
+            if (emoteExecuteAddr == nint.Zero)
+                throw new Exception("Signature scan failed (emoteExecuteAddr == 0).");
+
+            hook = interop.HookFromAddress<EmoteExecuteDelegate>(emoteExecuteAddr, OnEmoteDetour);
             hook.Enable();
 
             HookReady = true;
@@ -50,19 +59,21 @@ public sealed class EmoteHook : IDisposable
             var local = objects.LocalPlayer;
             if (local != null)
             {
-                var instigatorObj = objects.FirstOrDefault(o => (ulong)o.Address == instigatorAddr);
+                var localAddr = (ulong)local.Address;
+                bool isLocalInstigator = instigatorAddr == localAddr;
 
-                if ((instigatorObj != null && instigatorObj.GameObjectId == local.GameObjectId) ||
-                    targetId == local.GameObjectId)
+                bool targetsLocal = targetId == local.GameObjectId;
+
+                if (isLocalInstigator || targetsLocal)
                 {
                     LastEmoteId = emoteId;
                     LastEmoteUtc = DateTime.UtcNow;
                 }
             }
         }
-        catch
+        catch (Exception ex)
         {
-
+            log.Debug(ex, "[LapCatCounter] Exception in OnEmoteDetour");
         }
 
         hook?.Original(unk, instigatorAddr, emoteId, targetId, unk2);
@@ -77,13 +88,7 @@ public sealed class EmoteHook : IDisposable
 
     public void Dispose()
     {
-        try
-        {
-            hook?.Disable();
-            hook?.Dispose();
-        }
-        catch { }
-
+        try { hook?.Dispose(); } catch { }
         HookReady = false;
     }
 }
