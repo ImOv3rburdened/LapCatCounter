@@ -27,7 +27,6 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
 
     private readonly Configuration cfg;
     private readonly LapTracker tracker;
-    private readonly LapTracker satOnYouTracker;
     private readonly MainWindow window;
     private readonly EmoteHook emoteHook;
 
@@ -46,12 +45,6 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
     private float sitPostDelayRemaining = 0f;
     private Vector3 lastPosForGate = Vector3.Zero;
     private bool hasLastPosForGate = false;
-
-    private float satOnYouGateRemaining = 0f;
-    private float satOnYouPostDelayRemaining = 0f;
-    private Vector3 lastPosForSatOnYouGate = Vector3.Zero;
-    private bool hasLastPosForSatOnYouGate = false;
-    private ulong satOnYouInstigatorObjectId = 0;
 
     public LapCatCounterPlugin(
         IDalamudPluginInterface pluginInterface,
@@ -74,8 +67,7 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
         this.log = log;
 
         cfg = pi.GetPluginConfig() as Configuration ?? new Configuration();
-        tracker = new LapTracker(cfg, LapTracker.Mode.SatIn);
-        satOnYouTracker = new LapTracker(cfg, LapTracker.Mode.SatOnYou);
+        tracker = new LapTracker(cfg);
 
         if (cfg.RequireSitEmote && (cfg.SitEmoteId == 0 || cfg.GroundSitEmoteId == 0))
         {
@@ -95,7 +87,7 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
 
         emoteHook = new EmoteHook(sigScanner, interopProvider, objects, log);
 
-        window = new MainWindow(cfg, tracker, satOnYouTracker, SaveConfig, emoteHook, this);
+        window = new MainWindow(cfg, tracker, SaveConfig, emoteHook, this);
         ws.AddWindow(window);
 
         commands.AddHandler("/lapcat", new CommandInfo((_, _) => window.IsOpen = true)
@@ -105,10 +97,9 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
 
         commands.AddHandler("/lapcatcount", new CommandInfo((_, _) =>
         {
-            var totalSatIn = tracker.TotalLaps;
-            var totalSatOnYou = satOnYouTracker.TotalSatOnYou;
+            var total = tracker.TotalLaps;
             var unique = tracker.UniquePeople;
-            chat.Print($"[Lap Cat Counter] Sat in laps: {totalSatIn} - Sat on your lap: {totalSatOnYou}  - Unique people: {unique}");
+            chat.Print($"[Lap Cat Counter] You have sat in laps a total of {total} times across {unique} people.");
         })
         {
             HelpMessage = "Print your total lap count to chat"
@@ -172,47 +163,26 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
             {
                 emoteOk = false;
                 sitGateRemaining = 0f;
-                sitPostDelayRemaining = 0f;
                 hasLastPosForGate = false;
-                satOnYouGateRemaining = 0f;
-                satOnYouPostDelayRemaining = 0f;
-                hasLastPosForSatOnYouGate = false;
-                satOnYouInstigatorObjectId = 0;
             }
             else
             {
-                satOnYouGateRemaining = MathF.Max(0f, satOnYouGateRemaining - dt);
-                satOnYouPostDelayRemaining = MathF.Max(0f, satOnYouPostDelayRemaining - dt);
+                sitGateRemaining = MathF.Max(0f, sitGateRemaining - dt);
+                sitPostDelayRemaining = MathF.Max(0f, sitPostDelayRemaining - dt);
 
                 const float sitDetectWindow = 0.25f;
 
-                bool sawSitLocalInstigatorNow =
-                    (cfg.SitEmoteId != 0 && emoteHook.WasRecentlyLocalInstigator(cfg.SitEmoteId, sitDetectWindow)) ||
-                    (cfg.GroundSitEmoteId != 0 && emoteHook.WasRecentlyLocalInstigator(cfg.GroundSitEmoteId, sitDetectWindow));
+                bool sawSitNow =
+                    (cfg.SitEmoteId != 0 && emoteHook.WasRecently(cfg.SitEmoteId, sitDetectWindow)) ||
+                    (cfg.GroundSitEmoteId != 0 && emoteHook.WasRecently(cfg.GroundSitEmoteId, sitDetectWindow));
 
-                ulong instigatorObjId = 0;
-                bool sawSitTargetingMeNow =
-                    (cfg.SitEmoteId != 0 && emoteHook.WasRecentlyLocalTargetedByOther(cfg.SitEmoteId, sitDetectWindow, out instigatorObjId)) ||
-                    (cfg.GroundSitEmoteId != 0 && emoteHook.WasRecentlyLocalTargetedByOther(cfg.GroundSitEmoteId, sitDetectWindow, out instigatorObjId));
-
-
-                if (sawSitLocalInstigatorNow)
+                if (sawSitNow)
                 {
                     sitGateRemaining = cfg.EmoteHookSeconds;
                     sitPostDelayRemaining = 0.60f;
 
                     hasLastPosForGate = true;
                     lastPosForGate = local.Position;
-                }
-
-                if (sawSitTargetingMeNow)
-                {
-                    satOnYouGateRemaining = cfg.EmoteHookSeconds;
-                    satOnYouPostDelayRemaining = 0.60f;
-                    satOnYouInstigatorObjectId = instigatorObjId;
-
-                    hasLastPosForSatOnYouGate = true;
-                    lastPosForSatOnYouGate = local.Position;
                 }
 
                 if (hasLastPosForGate && sitGateRemaining > 0f)
@@ -228,21 +198,8 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
                     }
                 }
 
-                if (hasLastPosForSatOnYouGate && satOnYouGateRemaining > 0f)
-                {
-                    const float moveCancelDist = 0.04f;
-                    var moved = Vector3.Distance(local.Position, lastPosForSatOnYouGate);
-
-                    lastPosForSatOnYouGate = local.Position;
-
-                    if (moved > moveCancelDist)
-                    {
-                        satOnYouGateRemaining = 0f;
-                    }
-                }
+                emoteOk = sitGateRemaining > 0f && sitPostDelayRemaining <= 0f;
             }
-
-            emoteOk = sitGateRemaining > 0f && sitPostDelayRemaining <= 0f;
         }
 
         bool hookActive = emoteOk;
@@ -265,17 +222,6 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
         }, out var dbg);
 
         LastDebugInfo = dbg;
-
-        bool satOnYouOk = satOnYouGateRemaining > 0f && satOnYouPostDelayRemaining <= 0f;
-
-        satOnYouTracker.Update(dt, satOnYouOk, local.Position, others, requiredObjectId: satOnYouInstigatorObjectId, () =>
-        {
-            SaveConfig();
-            var who = satOnYouTracker.CurrentLapDisplayName;
-            var count = satOnYouTracker.GetSatOnYouCountFor(satOnYouTracker.CurrentLapKey);
-
-            chat.Print($"[Lap Cat Counter] {who} sat in your lap! They have sat on you {count} time(s).");
-        }, out var _);
 
         if (DebugEnabled)
         {

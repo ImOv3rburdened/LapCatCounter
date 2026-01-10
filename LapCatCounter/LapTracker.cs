@@ -10,39 +10,24 @@ namespace LapCatCounter
     {
         private readonly Configuration cfg;
 
-        public enum Mode
-        {
-            SatIn,
-            SatOnYou,
-        }
-
-        private readonly Mode mode;
         public string CurrentLapKey { get; private set; } = "";
         public string CurrentLapDisplayName { get; private set; } = "";
 
-        public string candidateKey = "";
+        private string candidateKey = "";
         private float stableSeconds = 0f;
         private bool countedThisGate = false;
         private float noCandidateSeconds = 0f;
 
-        public LapTracker(Configuration cfg, Mode mode = Mode.SatIn)
-        {
-            this.cfg = cfg;
-            this.mode = mode;
-        }
+        public LapTracker(Configuration cfg) => this.cfg = cfg;
 
         public int TotalLaps => cfg.People.Values.Sum(p => p.LapCount);
-        public int TotalSatOnYou => cfg.People.Values.Sum(p => p.SatOnYouCount);
         public int UniquePeople => cfg.People.Count;
 
         public int GetCountFor(string key)
             => cfg.People.TryGetValue(key, out var s) ? s.LapCount : 0;
 
-        public int GetSatOnYouCountFor(string key)
-            => cfg.People.TryGetValue(key, out var s) ? s.SatOnYouCount : 0;
-
         public IReadOnlyList<Configuration.PersonStats> TopPeople(int take = 200)
-            => cfg.People
+        => cfg.People
             .Select(kvp =>
             {
                 kvp.Value.Key = kvp.Key;
@@ -70,16 +55,6 @@ namespace LapCatCounter
             IEnumerable<IPlayerCharacter> others,
             Action onCounted,
             out LapDebugInfo? debug)
-            => Update(dt, gateActive, localPos, others, requiredObjectId: 0, onCounted, out debug);
-
-            public void Update(
-                float dt,
-                bool gateActive,
-                Vector3 localPos,
-                IEnumerable<IPlayerCharacter> others,
-                ulong requiredObjectId,
-                Action onCounted,
-                out LapDebugInfo? debug)
         {
             debug = null;
 
@@ -97,14 +72,8 @@ namespace LapCatCounter
             IPlayerCharacter? nearest = null;
             float nearestDist = float.MaxValue;
 
-            float zMin = mode == Mode.SatIn ? cfg.MinZAbove : -cfg.MaxZAbove;
-            float zMax = mode == Mode.SatIn ? cfg.MaxZAbove : cfg.SatOnYouEqualZTolerance;
-
             foreach (var pc in others)
             {
-                if (requiredObjectId != 0 && pc.GameObjectId != requiredObjectId)
-                    continue;
-
                 var name = pc.Name.TextValue;
                 if (string.IsNullOrWhiteSpace(name))
                     continue;
@@ -125,13 +94,10 @@ namespace LapCatCounter
                 if (dist3 > cfg.Radius)
                     continue;
 
-                if (MathF.Abs(dx) > cfg.XYThreshold)
-                    continue;
-                if (MathF.Abs(dz) > cfg.XYThreshold)
-                    continue;
+                if (MathF.Abs(dx) > cfg.XYThreshold) continue;
+                if (MathF.Abs(dz) > cfg.XYThreshold) continue;
 
-                if (dy < zMin || dy > zMax)
-                    continue;
+                if (MathF.Abs(dy) > cfg.MaxZAbove) continue;
 
                 if (dist3 < bestDist)
                 {
@@ -156,12 +122,12 @@ namespace LapCatCounter
                     float dz = lp.Z - op.Z;
                     float dy = lp.Y - op.Y;
 
-                    float horizontal = MathF.Sqrt(dx * dx + dx * dx);
+                    float horizontal = MathF.Sqrt(dx * dx + dz * dz);
                     float dist3 = MathF.Sqrt(dx * dx + dz * dz + dy * dy);
 
                     bool passR = dist3 <= cfg.Radius;
                     bool passXY = MathF.Abs(dx) <= cfg.XYThreshold && MathF.Abs(dz) <= cfg.XYThreshold;
-                    bool passZ = dy >= zMin && dy <= zMax;
+                    bool passZ = MathF.Abs(dy) <= cfg.MaxZAbove;
 
                     debug = new LapDebugInfo
                     {
@@ -184,6 +150,7 @@ namespace LapCatCounter
                 {
                     debug = new LapDebugInfo { Reason = "No players in range to evaluate" };
                 }
+
                 return;
             }
 
@@ -214,7 +181,7 @@ namespace LapCatCounter
 
                 bool passR = dist3 <= cfg.Radius;
                 bool passXY = MathF.Abs(dx) <= cfg.XYThreshold && MathF.Abs(dz) <= cfg.XYThreshold;
-                bool passZ = dy >= zMin && dy <= zMax;
+                bool passZ = dy >= cfg.MinZAbove && dy <= cfg.MaxZAbove;
 
                 debug = new LapDebugInfo
                 {
@@ -245,8 +212,6 @@ namespace LapCatCounter
                         DisplayName = best.Name.TextValue,
                         LapCount = 0,
                         LastLapUtc = DateTime.MinValue,
-                        SatOnYouCount = 0,
-                        LastSatOnYouUtc = DateTime.MinValue,
                         Key = bestKey
                     };
                     cfg.People[bestKey] = person;
@@ -258,19 +223,15 @@ namespace LapCatCounter
                 }
 
                 var cooldown = TimeSpan.FromSeconds(Math.Max(0, cfg.CooldownSecondsPerPerson));
-
-                if (mode == Mode.SatIn)
+                if (person.LastLapUtc + cooldown <= now)
                 {
-                    if (person.LastLapUtc + cooldown <= now)
-                    {
-                        person.LapCount += 1;
-                        person.LastLapUtc = now;
-                        countedThisGate = true;
-                        onCounted();
-                    }
+                    person.LapCount += 1;
+                    person.LastLapUtc = now;
+
+                    countedThisGate = true;
+                    onCounted();
                 }
             }
         }
     }
 }
-
