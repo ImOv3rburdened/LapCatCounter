@@ -170,7 +170,7 @@ public sealed class MainWindow : Window
 
         ImGui.SameLine(0, gap);
 
-        var current = string.IsNullOrWhiteSpace(tracker.CurrentLapDisplayName) ? "None" : tracker.CurrentLapDisplayName;
+        var current = string.IsNullOrWhiteSpace(tracker.CurrentBestCandidateKey) ? "None" : tracker.CurrentLapDisplayName;
         UiWidgets.StatCard(
             id: "current",
             size: new Vector2(cardW, cardH),
@@ -339,6 +339,8 @@ public sealed class MainWindow : Window
 
             ImGui.TableSetColumnIndex(4);
 
+            ImGui.PushID(p.Key ?? p.DisplayName ?? idx.ToString(CultureInfo.InvariantCulture));
+
             if (UiWidgets.SmallPillButton("Copy", ImGuiColors.DalamudGrey2))
                 ImGui.SetClipboardText(p.DisplayName);
 
@@ -355,6 +357,8 @@ public sealed class MainWindow : Window
                 pendingResetAtUtc = DateTime.UtcNow;
                 openResetPopupThisFrame = true;
             }
+
+            ImGui.PopID();
 
             ImGui.TableSetColumnIndex(5);
             ImGui.PushStyleColor(ImGuiCol.Text, ImGuiColors.DalamudGrey2);
@@ -400,7 +404,7 @@ public sealed class MainWindow : Window
         {
             var d = plugin.LastDebugInfo.Value;
             ImGui.Spacing();
-            ImGui.TextUnformatted($"Candidate: {d.CandidateName}");
+            ImGui.TextUnformatted($"Candidate: {(string.IsNullOrWhiteSpace(d.CandidateName) ? "None" : d.CandidateName)}");
             ImGui.TextUnformatted($"dist3={d.Distance3D:0.00} horizXZ={d.HorizontalXZ:0.00}");
             ImGui.TextUnformatted($"dx={d.Dx:0.00} dz={d.Dz:0.00} dy={d.Dy:0.00}");
             ImGui.TextUnformatted($"passR={d.PassRadius} passXY={d.PassXY} passZ={d.PassZ}");
@@ -438,6 +442,8 @@ public sealed class MainWindow : Window
             if (!string.IsNullOrWhiteSpace(pendingResetKey))
             {
                 cfg.People.Remove(pendingResetKey);
+                tracker.ResetCurrent();
+                tracker.RecalculateTotalsFromPeople();
                 save();
             }
 
@@ -470,8 +476,8 @@ public sealed class MainWindow : Window
         if (UiWidgets.SmallPillButton("Reset ALL", ImGuiColors.DalamudRed))
         {
             cfg.People.Clear();
+            tracker.ResetAllTotals();
             save();
-            tracker.ResetCurrent();
             ImGui.CloseCurrentPopup();
         }
     }

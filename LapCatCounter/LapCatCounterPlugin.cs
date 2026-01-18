@@ -23,6 +23,7 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
     private readonly IFramework framework;
     private readonly IChatGui chat;
     private readonly IPluginLog log;
+    private readonly IClientState clientState;
 
     private readonly WindowSystem ws = new("LapCatCounter");
 
@@ -47,6 +48,10 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
     private bool hasLastPosForGate = false;
     private DateTime lastSitTriggerUtc = DateTime.MinValue;
     private const double SitTriggerWindowSeconds = 2.0;
+    private bool wasInGpose = false;
+    private DateTime gposeEnteredUtc = DateTime.MinValue;
+    private const double GposeSuppressSeconds = 1.5;
+    private string lockedCandidateKey = "";
 
     public LapCatCounterPlugin(
         IDalamudPluginInterface pluginInterface,
@@ -54,6 +59,7 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
         IObjectTable objectTable,
         IGameGui gameGui,
         IFramework framework,
+        IClientState clientState,
         IChatGui chatGui,
         ISigScanner sigScanner,
         IPluginLog log,
@@ -66,6 +72,7 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
         gui = gameGui;
         this.framework = framework;
         chat = chatGui;
+        this.clientState = clientState;
         this.log = log;
 
         cfg = pi.GetPluginConfig() as Configuration ?? new Configuration();
@@ -174,7 +181,7 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
             tracker.ResetCurrent();
             sitRequirementSatisfied = false;
             hasLastPosForGate = false;
-
+            lockedCandidateKey = "";
             LastDebugInfo = null;
             LastHookActive = false;
             return;
@@ -182,6 +189,25 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
 
         float dt = ImGui.GetIO().DeltaTime;
         if (dt <= 0) dt = 1f / 60f;
+
+        bool inGpose = clientState.IsGPosing;
+        if (inGpose && !wasInGpose)
+            gposeEnteredUtc = DateTime.UtcNow;
+
+        wasInGpose = inGpose;
+
+        bool suppressGposeSit = inGpose && (DateTime.UtcNow - gposeEnteredUtc).TotalSeconds < GposeSuppressSeconds;
+
+        if (inGpose)
+        {
+            tracker.ResetCurrent();
+            sitRequirementSatisfied = false;
+            hasLastPosForGate = false;
+            LastDebugInfo = null;
+            LastHookActive = false;
+            lockedCandidateKey = "";
+            return;
+        }
 
         if (!cfg.RequireSitEmote)
         {
@@ -209,6 +235,8 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
 
                 bool isNewSitTrigger =
                     isSitEmote &&
+                    !sitRequirementSatisfied &&
+                    !suppressGposeSit &&
                     emoteHook.LastEmoteUtc != lastSitTriggerUtc &&
                     emoteAge <= SitTriggerWindowSeconds;
 
@@ -221,6 +249,7 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
                     hasLastPosForGate = true;
 
                     tracker.ResetCurrent();
+                    lockedCandidateKey = "";
                 }
 
                 if (hasLastPosForGate && sitRequirementSatisfied)
@@ -233,6 +262,7 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
                     {
                         sitRequirementSatisfied = false;
                         hasLastPosForGate = false;
+                        lockedCandidateKey = "";
                         tracker.ResetCurrent();
                     }
                 }
@@ -261,13 +291,41 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
 
         if (cfg.RequireSitEmote && sitRequirementSatisfied)
         {
-            if (!dbg.HasValue || string.IsNullOrEmpty(dbg.Value.CandidateName))
+            if (!dbg.HasValue || dbg.Value.Reason != "Best candidate selected")
             {
                 sitRequirementSatisfied = false;
                 hasLastPosForGate = false;
+                lockedCandidateKey = "";
                 tracker.ResetCurrent();
+                LastHookActive = false;
+            }
+            else
+            {
+                var bestKeyThisFrame = tracker.CurrentBestCandidateKey;
+
+                if (string.IsNullOrEmpty(bestKeyThisFrame))
+                {
+                    sitRequirementSatisfied = false;
+                    hasLastPosForGate = false;
+                    lockedCandidateKey = "";
+                    tracker.ResetCurrent();
+                    LastHookActive = false;
+                }
+                else if (string.IsNullOrEmpty(lockedCandidateKey))
+                {
+                    lockedCandidateKey = bestKeyThisFrame;
+                }
+                else if (!string.Equals(bestKeyThisFrame, lockedCandidateKey, StringComparison.Ordinal))
+                {
+                    sitRequirementSatisfied = false;
+                    hasLastPosForGate = false;
+                    lockedCandidateKey = "";
+                    tracker.ResetCurrent();
+                    LastHookActive = false;
+                }
             }
         }
+
 
         LastDebugInfo = dbg;
 

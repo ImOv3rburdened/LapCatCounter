@@ -63,7 +63,6 @@ public sealed unsafe class EmoteHook : IDisposable
                 bool isLocalInstigator = instigatorAddr == localAddr;
 
                 bool targetsLocal = targetId == local.GameObjectId;
-
                 if (isLocalInstigator || targetsLocal)
                 {
                     LastEmoteId = emoteId;

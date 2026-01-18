@@ -86,7 +86,6 @@ public static class EmoteIdResolver
     {
         if (cmdObj is null) return null;
 
-        // 1) Direct string?
         if (cmdObj is string s0)
             return s0;
 

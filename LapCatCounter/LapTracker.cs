@@ -11,18 +11,17 @@ namespace LapCatCounter
     public sealed class LapTracker
     {
         private readonly Configuration cfg;
-
         public string CurrentLapKey { get; private set; } = "";
         public string CurrentLapDisplayName { get; private set; } = "";
-
         private string candidateKey = "";
         private float stableSeconds = 0f;
         private bool countedThisGate = false;
         private float noCandidateSeconds = 0f;
-        private DateTime? lapStartTime;
         private bool lapActive = false;
         private string lapSessionKey = "";
         private float currentLapSeconds = 0f;
+        public string? CurrentBestCandidateKey { get; private set; }
+        private bool candidateInvalidUntilResit = false;
         public TimeSpan CurrentLapTime => TimeSpan.FromSeconds(currentLapSeconds);
         public TimeSpan TotalLapTime { get; private set; } = TimeSpan.Zero;
         public TimeSpan LongestLapTime { get; private set; } = TimeSpan.Zero;
@@ -48,7 +47,6 @@ namespace LapCatCounter
                 cfg.People[key] = stats;
             }
 
-            // Keep the most recent name
             if (!string.IsNullOrWhiteSpace(displayName))
                 stats.DisplayName = displayName;
 
@@ -61,17 +59,49 @@ namespace LapCatCounter
             cfg.LongestLapSeconds = (long)LongestLapTime.TotalSeconds;
         }
 
-        public IReadOnlyList<Configuration.PersonStats> TopPeople(int take = 200)
-        => cfg.People
-            .Select(kvp =>
+        public void ResetAllTotals()
+        {
+            ResetCurrent();
+
+            TotalLapTime = TimeSpan.Zero;
+            LongestLapTime = TimeSpan.Zero;
+
+            cfg.TotalLapSeconds = 0;
+            cfg.LongestLapSeconds = 0;
+        }
+
+        public void RecalculateTotalsFromPeople()
+        {
+            EndLapSession();
+
+            long totalSeconds = 0;
+            long longestSeconds = 0;
+
+            foreach (var s in cfg.People.Values)
             {
-                kvp.Value.Key = kvp.Key;
-                return kvp.Value;
-            })
-            .OrderByDescending(p => p.LapCount)
-            .ThenBy(p => p.DisplayName, StringComparer.OrdinalIgnoreCase)
-            .Take(take)
-            .ToList();
+                totalSeconds += s.TotalLapSeconds;
+                if (s.LongestLapSeconds > longestSeconds)
+                    longestSeconds = s.LongestLapSeconds;
+            }
+
+            TotalLapTime = TimeSpan.FromSeconds(totalSeconds);
+            LongestLapTime = TimeSpan.FromSeconds(longestSeconds);
+
+            cfg.TotalLapSeconds = totalSeconds;
+            cfg.LongestLapSeconds = longestSeconds;
+        }
+
+        public IReadOnlyList<Configuration.PersonStats> TopPeople(int take = 200)
+            => cfg.People
+                .Select(kvp =>
+                {
+                    kvp.Value.Key = kvp.Key;
+                    return kvp.Value;
+                })
+                .OrderByDescending(p => p.LapCount)
+                .ThenBy(p => p.DisplayName, StringComparer.OrdinalIgnoreCase)
+                .Take(take)
+                .ToList();
 
         public void ResetCurrent()
         {
@@ -82,7 +112,9 @@ namespace LapCatCounter
             stableSeconds = 0f;
             countedThisGate = false;
             noCandidateSeconds = 0f;
+            CurrentBestCandidateKey = null;
         }
+
         private void StartLapSession(string key)
         {
             lapActive = true;
@@ -122,21 +154,36 @@ namespace LapCatCounter
             out LapDebugInfo? debug)
         {
             debug = null;
+            CurrentBestCandidateKey = null;
 
             if (!gateActive)
             {
+                candidateInvalidUntilResit = false;
+
                 EndLapSession();
                 ResetCurrent();
                 debug = new LapDebugInfo { Reason = "gateActive=false -> ResetCurrent()" };
                 return;
             }
 
+            if (candidateInvalidUntilResit)
+            {
+                EndLapSession();
+                CurrentLapKey = "";
+                CurrentLapDisplayName = "";
+
+                debug = new LapDebugInfo
+                {
+                    CandidateName = "",
+                    CandidateObjectId = 0,
+                    Reason = "Candidate invalid until re-sit (latched)"
+                };
+                return;
+            }
+
             IPlayerCharacter? best = null;
             float bestDist = float.MaxValue;
             string bestKey = "";
-
-            IPlayerCharacter? nearest = null;
-            float nearestDist = float.MaxValue;
 
             foreach (var pc in others)
             {
@@ -148,21 +195,15 @@ namespace LapCatCounter
                 float dz = localPos.Z - pc.Position.Z;
                 float dy = localPos.Y - pc.Position.Y;
 
-                float horizontal = MathF.Sqrt(dx * dx + dz * dz);
                 float dist3 = MathF.Sqrt(dx * dx + dz * dz + dy * dy);
 
-                if (dist3 < nearestDist)
-                {
-                    nearestDist = dist3;
-                    nearest = pc;
-                }
-
-                if (dist3 > cfg.Radius)
+                const float BestMaxDist3 = 0.4f;
+                var effectiveRadius = MathF.Min(cfg.Radius, BestMaxDist3);
+                if (dist3 > effectiveRadius)
                     continue;
 
                 if (MathF.Abs(dx) > cfg.XYThreshold) continue;
                 if (MathF.Abs(dz) > cfg.XYThreshold) continue;
-
                 if (MathF.Abs(dy) > cfg.MaxZAbove) continue;
 
                 if (dist3 < bestDist)
@@ -176,52 +217,34 @@ namespace LapCatCounter
             if (best is null)
             {
                 EndLapSession();
+
+                candidateInvalidUntilResit = true;
+
                 noCandidateSeconds += dt;
                 if (noCandidateSeconds >= 15.0f)
                     ResetCurrent();
 
-                if (nearest != null)
+                debug = new LapDebugInfo
                 {
-                    var lp = localPos;
-                    var op = nearest.Position;
-
-                    float dx = lp.X - op.X;
-                    float dz = lp.Z - op.Z;
-                    float dy = lp.Y - op.Y;
-
-                    float horizontal = MathF.Sqrt(dx * dx + dz * dz);
-                    float dist3 = MathF.Sqrt(dx * dx + dz * dz + dy * dy);
-
-                    bool passR = dist3 <= cfg.Radius;
-                    bool passXY = MathF.Abs(dx) <= cfg.XYThreshold && MathF.Abs(dz) <= cfg.XYThreshold;
-                    bool passZ = MathF.Abs(dy) <= cfg.MaxZAbove;
-
-                    debug = new LapDebugInfo
-                    {
-                        CandidateName = nearest.Name.TextValue,
-                        CandidateObjectId = nearest.GameObjectId,
-                        Distance3D = dist3,
-                        HorizontalXZ = horizontal,
-                        Dx = dx,
-                        Dz = dz,
-                        Dy = dy,
-                        PassRadius = passR,
-                        PassXY = passXY,
-                        PassZ = passZ,
-                        StableSeconds = stableSeconds,
-                        CountedThisGate = countedThisGate,
-                        Reason = "No candidate passed thresholds (showing nearest)"
-                    };
-                }
-                else
-                {
-                    debug = new LapDebugInfo { Reason = "No players in range to evaluate" };
-                }
-
+                    CandidateName = "",
+                    CandidateObjectId = 0,
+                    Distance3D = 0,
+                    HorizontalXZ = 0,
+                    Dx = 0,
+                    Dz = 0,
+                    Dy = 0,
+                    PassRadius = false,
+                    PassXY = false,
+                    PassZ = false,
+                    StableSeconds = stableSeconds,
+                    CountedThisGate = countedThisGate,
+                    Reason = "No valid best candidate (dist3>0.4 or failed thresholds) -> latched until re-sit"
+                };
                 return;
             }
 
             noCandidateSeconds = 0f;
+            CurrentBestCandidateKey = bestKey;
 
             CurrentLapKey = bestKey;
             CurrentLapDisplayName = best.Name.TextValue;
@@ -255,7 +278,10 @@ namespace LapCatCounter
                 float horizontal = MathF.Sqrt(dx * dx + dz * dz);
                 float dist3 = MathF.Sqrt(dx * dx + dz * dz + dy * dy);
 
-                bool passR = dist3 <= cfg.Radius;
+                const float BestMaxDist3 = 0.4f;
+                var effectiveRadius = MathF.Min(cfg.Radius, BestMaxDist3);
+                bool passR = dist3 <= effectiveRadius;
+
                 bool passXY = MathF.Abs(dx) <= cfg.XYThreshold && MathF.Abs(dz) <= cfg.XYThreshold;
                 bool passZ = dy >= cfg.MinZAbove && dy <= cfg.MaxZAbove;
 
