@@ -8,7 +8,6 @@ using Dalamud.Plugin.Services;
 using LapCatCounter;
 using System;
 using System.Linq;
-using System.Numerics;
 
 namespace LapCatCounter;
 
@@ -19,7 +18,6 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
     private readonly IDalamudPluginInterface pi;
     private readonly ICommandManager commands;
     private readonly IObjectTable objects;
-    private readonly IGameGui gui;
     private readonly IFramework framework;
     private readonly IChatGui chat;
     private readonly IPluginLog log;
@@ -32,26 +30,18 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
     private readonly MainWindow window;
     private readonly EmoteHook emoteHook;
 
-    private Vector3 lastLocalPos = Vector3.Zero;
-
-    internal bool DebugEnabled { get; private set; } = false;
+    internal bool DebugEnabled { get; private set; }
     internal bool DebugOverlayEnabled { get; set; } = true;
-    internal bool LastHookActive { get; private set; } = false;
+    internal bool LastHookActive { get; private set; }
     internal LapDebugInfo? LastDebugInfo { get; private set; }
 
-    private float debugNextChatAt = 0f;
-    private float debugNextLogAt = 0f;
+    private float debugNextChatAt;
+    private float debugNextLogAt;
     private const float DebugChatInterval = 1.0f;
     private const float DebugLogInterval = 0.25f;
-    private Vector3 lastPosForGate = Vector3.Zero;
-    private bool sitRequirementSatisfied = false;
-    private bool hasLastPosForGate = false;
-    private DateTime lastSitTriggerUtc = DateTime.MinValue;
-    private const double SitTriggerWindowSeconds = 2.0;
-    private bool wasInGpose = false;
+    private bool wasInGpose;
     private DateTime gposeEnteredUtc = DateTime.MinValue;
     private const double GposeSuppressSeconds = 1.5;
-    private string lockedCandidateKey = "";
 
     public LapCatCounterPlugin(
         IDalamudPluginInterface pluginInterface,
@@ -69,7 +59,6 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
         pi = pluginInterface;
         commands = commandManager;
         objects = objectTable;
-        gui = gameGui;
         this.framework = framework;
         chat = chatGui;
         this.clientState = clientState;
@@ -84,32 +73,34 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
             cfg.SitEmoteId = 50;
             changed = true;
         }
+
         if (cfg.GroundSitEmoteId == 0)
         {
             cfg.GroundSitEmoteId = 52;
             changed = true;
         }
 
-        if (changed)
-        {
-            pi.SavePluginConfig(cfg);
-            log.Information($"[LapCatCounter] Migrated sit IDs: /sit={cfg.SitEmoteId}, /groundsit={cfg.GroundSitEmoteId}");
-        }
-
         if (cfg.RequireSitEmote && (cfg.SitEmoteId == 0 || cfg.GroundSitEmoteId == 0))
         {
             if (EmoteIdResolver.TryResolveSitIds(dataManager, log, out var sitId, out var groundId))
             {
-                if (cfg.SitEmoteId == 0) cfg.SitEmoteId = sitId;
-                if (cfg.GroundSitEmoteId == 0) cfg.GroundSitEmoteId = groundId;
+                if (cfg.SitEmoteId == 0)
+                    cfg.SitEmoteId = sitId;
+                if (cfg.GroundSitEmoteId == 0)
+                    cfg.GroundSitEmoteId = groundId;
 
-                pi.SavePluginConfig(cfg);
-                log.Information($"[LapCatCounter] Auto-resolved sit IDs: /sit={cfg.SitEmoteId}, /groundsit={cfg.GroundSitEmoteId}");
+                changed = true;
             }
             else
             {
                 log.Warning("[LapCatCounter] Could not auto-resolve /sit and /groundsit IDs (Lumina lookup failed).");
             }
+        }
+
+        if (changed)
+        {
+            pi.SavePluginConfig(cfg);
+            log.Information($"[LapCatCounter] Using sit IDs: /sit={cfg.SitEmoteId}, /groundsit={cfg.GroundSitEmoteId}");
         }
 
         emoteHook = new EmoteHook(interopProvider, objects, log);
@@ -129,7 +120,6 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
             var totalTime = UiWidgets.FormatDuration(tracker.TotalLapTime);
             var bestTime = UiWidgets.FormatDuration(tracker.LongestLapTime);
             chat.Print($"[Lap Cat Counter] Total laps: {total} across {unique} people. Total lap time: {totalTime}. Longest lap: {bestTime}.");
-
         })
         {
             HelpMessage = "Print your total lap count to chat"
@@ -154,7 +144,7 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
 
     private void OnLapDebugCommand(string cmd, string args)
     {
-        args = (args ?? "").Trim().ToLowerInvariant();
+        args = (args ?? string.Empty).Trim().ToLowerInvariant();
 
         if (args == "overlay")
         {
@@ -179,16 +169,14 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
         if (local is null)
         {
             tracker.ResetCurrent();
-            sitRequirementSatisfied = false;
-            hasLastPosForGate = false;
-            lockedCandidateKey = "";
             LastDebugInfo = null;
             LastHookActive = false;
             return;
         }
 
         float dt = ImGui.GetIO().DeltaTime;
-        if (dt <= 0) dt = 1f / 60f;
+        if (dt <= 0)
+            dt = 1f / 60f;
 
         bool inGpose = clientState.IsGPosing;
         if (inGpose && !wasInGpose)
@@ -196,185 +184,84 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
 
         wasInGpose = inGpose;
 
-        bool suppressGposeSit = inGpose && (DateTime.UtcNow - gposeEnteredUtc).TotalSeconds < GposeSuppressSeconds;
-
-        if (inGpose)
+        bool suppressGpose = inGpose && (DateTime.UtcNow - gposeEnteredUtc).TotalSeconds < GposeSuppressSeconds;
+        if (suppressGpose || inGpose)
         {
             tracker.ResetCurrent();
-            sitRequirementSatisfied = false;
-            hasLastPosForGate = false;
             LastDebugInfo = null;
             LastHookActive = false;
-            lockedCandidateKey = "";
             return;
         }
 
-        if (!cfg.RequireSitEmote)
-        {
-            sitRequirementSatisfied = false;
-            hasLastPosForGate = false;
-            tracker.ResetCurrent();
-        }
-
-        lastLocalPos = local.Position;
-
-        bool emoteOk = true;
-
-        var lastEmote = emoteHook.LastEmoteId;
-        var emoteAge = (DateTime.UtcNow - emoteHook.LastEmoteUtc).TotalSeconds;
-
-        if (cfg.RequireSitEmote)
-        {
-            if (!emoteHook.HookReady)
-            {
-                emoteOk = false;
-            }
-            else
-            {
-                bool isSitEmote = lastEmote == cfg.SitEmoteId || lastEmote == cfg.GroundSitEmoteId;
-
-                bool isNewSitTrigger =
-                    isSitEmote &&
-                    !sitRequirementSatisfied &&
-                    !suppressGposeSit &&
-                    emoteHook.LastEmoteUtc != lastSitTriggerUtc &&
-                    emoteAge <= SitTriggerWindowSeconds;
-
-                if (isNewSitTrigger)
-                {
-                    lastSitTriggerUtc = emoteHook.LastEmoteUtc;
-
-                    sitRequirementSatisfied = true;
-                    lastPosForGate = local.Position;
-                    hasLastPosForGate = true;
-
-                    tracker.ResetCurrent();
-                    lockedCandidateKey = "";
-                }
-
-                if (hasLastPosForGate && sitRequirementSatisfied)
-                {
-                    const float moveCancelDist = 0.25f;
-                    var moved = Vector3.Distance(local.Position, lastPosForGate);
-                    lastPosForGate = local.Position;
-
-                    if (moved > moveCancelDist)
-                    {
-                        sitRequirementSatisfied = false;
-                        hasLastPosForGate = false;
-                        lockedCandidateKey = "";
-                        tracker.ResetCurrent();
-                    }
-                }
-
-                emoteOk = sitRequirementSatisfied;
-            }
-        }
-
-        bool hookActive = !cfg.RequireSitEmote || emoteOk;
-        LastHookActive = hookActive;
-
         var others = objects
             .OfType<IPlayerCharacter>()
-            .Where(p => p.Address != local.Address);
+            .Where(p => p.Address != local.Address)
+            .ToList();
 
-        tracker.Update(dt, hookActive, local.Position, others, () =>
+        tracker.Update(dt, local, others, emoteHook, () =>
         {
             SaveConfig();
             var who = tracker.CurrentLapDisplayName;
             var countOnThem = tracker.GetCountFor(tracker.CurrentLapKey);
-            var total = tracker.TotalLaps;
-            var unique = tracker.UniquePeople;
 
-            chat.Print($"[Lap Cat Counter] You sat in {who}'s lap! You have sat in their lap {countOnThem} time(s).");
+            if (tracker.CurrentRole == LapInteractionRole.SittingInOtherLap)
+                chat.Print($"[Lap Cat Counter] You sat in {who}'s lap! You have {countOnThem} recorded lap session(s) with them.");
+            else if (tracker.CurrentRole == LapInteractionRole.OtherSittingInMyLap)
+                chat.Print($"[Lap Cat Counter] {who} sat in your lap! You have {countOnThem} recorded lap session(s) with them.");
         }, out var dbg);
 
-        if (cfg.RequireSitEmote && sitRequirementSatisfied)
+        LastHookActive = emoteHook.HookReady;
+        LastDebugInfo = dbg;
+
+        if (!DebugEnabled)
+            return;
+
+        var now = (float)ImGui.GetTime();
+        var recentEmote = emoteHook.LastRelevantEvent;
+        var recentEmoteAge = recentEmote.HasValue ? (DateTime.UtcNow - recentEmote.Value.TimestampUtc).TotalSeconds : -1d;
+        var direction = !recentEmote.HasValue
+            ? "none"
+            : recentEmote.Value.InstigatorIsLocal
+                ? "local->target"
+                : recentEmote.Value.TargetIsLocal
+                    ? "other->local"
+                    : "non-local";
+
+        if (now >= debugNextLogAt)
         {
-            if (!dbg.HasValue || dbg.Value.Reason != "Best candidate selected")
+            debugNextLogAt = now + DebugLogInterval;
+
+            if (dbg.HasValue)
             {
-                sitRequirementSatisfied = false;
-                hasLastPosForGate = false;
-                lockedCandidateKey = "";
-                tracker.ResetCurrent();
-                LastHookActive = false;
+                var d = dbg.Value;
+                log.Debug($"[LapCatCounter DBG] hookReady={emoteHook.HookReady} role={d.CurrentRole} status={d.CurrentStatus} partner={d.CandidateName} " +
+                          $"dist3={d.Distance3D:0.00} horizXZ={d.HorizontalXZ:0.00} vertical={d.VerticalDelta:0.00} " +
+                          $"passR={d.PassRadius} passXY={d.PassXY} passVertical={d.PassVertical} localState={d.LocalStateOk} partnerState={d.PartnerStateOk} " +
+                          $"localMode={d.LocalMode} partnerMode={d.PartnerMode} stable={d.StableSeconds:0.00}/{cfg.StableSecondsToCount:0.00} " +
+                          $"missing={d.MissingSeconds:0.00}/{cfg.SessionBreakGraceSeconds:0.00} reason={d.Reason} " +
+                          $"lastEmote={(recentEmote?.EmoteId ?? 0)} emoteAge={recentEmoteAge:0.00}s direction={direction} instigator={recentEmote?.InstigatorName ?? ""} target={recentEmote?.TargetName ?? ""}");
             }
             else
             {
-                var bestKeyThisFrame = tracker.CurrentBestCandidateKey;
-
-                if (string.IsNullOrEmpty(bestKeyThisFrame))
-                {
-                    sitRequirementSatisfied = false;
-                    hasLastPosForGate = false;
-                    lockedCandidateKey = "";
-                    tracker.ResetCurrent();
-                    LastHookActive = false;
-                }
-                else if (string.IsNullOrEmpty(lockedCandidateKey))
-                {
-                    lockedCandidateKey = bestKeyThisFrame;
-                }
-                else if (!string.Equals(bestKeyThisFrame, lockedCandidateKey, StringComparison.Ordinal))
-                {
-                    sitRequirementSatisfied = false;
-                    hasLastPosForGate = false;
-                    lockedCandidateKey = "";
-                    tracker.ResetCurrent();
-                    LastHookActive = false;
-                }
+                log.Debug($"[LapCatCounter DBG] hookReady={emoteHook.HookReady} lastEmote={(recentEmote?.EmoteId ?? 0)} emoteAge={recentEmoteAge:0.00}s direction={direction} (no detector state)");
             }
         }
 
-
-        LastDebugInfo = dbg;
-
-        if (DebugEnabled)
+        if (now >= debugNextChatAt)
         {
-            var now = (float)ImGui.GetTime();
+            debugNextChatAt = now + DebugChatInterval;
 
-            if (now >= debugNextLogAt)
+            if (dbg.HasValue)
             {
-                debugNextLogAt = now + DebugLogInterval;
-                var dbgEmoteAge = (DateTime.UtcNow - emoteHook.LastEmoteUtc).TotalSeconds;
-                var dbgLastEmote = emoteHook.LastEmoteId;
-
-                if (dbg.HasValue)
-                {
-                    var d = dbg.Value;
-                    log.Debug($"[LapCatCounter DBG] hookActive={hookActive} hookReady={emoteHook.HookReady} " +
-                              $"cand={d.CandidateName} dist3={d.Distance3D:0.00} horizXZ={d.HorizontalXZ:0.00} " +
-                              $"dx={d.Dx:0.00} dz={d.Dz:0.00} dy={d.Dy:0.00} " +
-                              $"passR={d.PassRadius} passXY={d.PassXY} passZ={d.PassZ} " +
-                              $"stable={d.StableSeconds:0.00}/{cfg.StableSecondsToCount:0.00} counted={d.CountedThisGate} " +
-                              $"reason={d.Reason} " +
-                              $" lastEmote={dbgLastEmote} age={dbgEmoteAge:0.00}s cfgSit={cfg.SitEmoteId} cfgGSit={cfg.GroundSitEmoteId}");
-                }
-                else
-                {
-                    log.Debug($"[LapCatCounter DBG] hookActive={hookActive} hookReady={emoteHook.HookReady} (no debug info)");
-                }
+                var d = dbg.Value;
+                chat.Print($"[LapDBG] role={d.CurrentRole} status={d.CurrentStatus} partner={d.CandidateName} dist3={d.Distance3D:0.00} " +
+                           $"horizXZ={d.HorizontalXZ:0.00} vertical={d.VerticalDelta:0.00} checks(R/XY/V)={d.PassRadius}/{d.PassXY}/{d.PassVertical} " +
+                           $"state(local/partner)={d.LocalStateOk}/{d.PartnerStateOk} stable={d.StableSeconds:0.0}/{cfg.StableSecondsToCount:0.0} " +
+                           $"missing={d.MissingSeconds:0.0}/{cfg.SessionBreakGraceSeconds:0.0} event={(recentEmote?.EmoteId ?? 0)} {direction} reason={d.Reason}");
             }
-
-            if (now >= debugNextChatAt)
+            else
             {
-                debugNextChatAt = now + DebugChatInterval;
-                var dbgEmoteAge = (DateTime.UtcNow - emoteHook.LastEmoteUtc).TotalSeconds;
-                var dbgLastEmote = emoteHook.LastEmoteId;
-
-                if (dbg.HasValue)
-                {
-                    var d = dbg.Value;
-                    chat.Print($"[LapDBG] hookActive={hookActive} hookReady={emoteHook.HookReady} best={d.CandidateName} " +
-                               $"dist3={d.Distance3D:0.00} horizXZ={d.HorizontalXZ:0.00} dx={d.Dx:0.00} dz={d.Dz:0.00} dy={d.Dy:0.00} " +
-                               $"R={cfg.Radius:0.00} XY={cfg.XYThreshold:0.00} Z=[{cfg.MinZAbove:0.00},{cfg.MaxZAbove:0.00}] " +
-                               $"pass(R/XY/Z)={d.PassRadius}/{d.PassXY}/{d.PassZ} stable={d.StableSeconds:0.0}/{cfg.StableSecondsToCount:0.0}" +
-                               $" lastEmote={dbgLastEmote} age={dbgEmoteAge:0.00}s cfgSit={cfg.SitEmoteId} cfgGSit={cfg.GroundSitEmoteId}");
-                }
-                else
-                {
-                    chat.Print($"[LapDBG] hookActive={hookActive} hookReady={emoteHook.HookReady} (no candidate)");
-                }
+                chat.Print($"[LapDBG] hookReady={emoteHook.HookReady} event={(recentEmote?.EmoteId ?? 0)} {direction} (no detector state)");
             }
         }
     }
@@ -398,3 +285,4 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
         emoteHook.Dispose();
     }
 }
+

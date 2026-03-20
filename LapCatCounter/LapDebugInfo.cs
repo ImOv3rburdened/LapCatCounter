@@ -8,13 +8,17 @@ public struct LapDebugInfo
     public ulong CandidateObjectId;
     public float Distance3D;
     public float HorizontalXZ;
-    public float Dx;
-    public float Dy;
-    public float Dz;
+    public float VerticalDelta;
     public bool PassRadius;
     public bool PassXY;
-    public bool PassZ;
+    public bool PassVertical;
+    public bool LocalStateOk;
+    public bool PartnerStateOk;
+    public string LocalMode;
+    public string PartnerMode;
     public float StableSeconds;
-    public bool CountedThisGate;
+    public float MissingSeconds;
+    public string CurrentRole;
+    public string CurrentStatus;
     public string Reason;
 }
