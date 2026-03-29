@@ -9,7 +9,6 @@
     "TestingAssemblyVersion": null,
     "RepoUrl": "https://github.com/ImOv3rburdened/LapCatCounter",
     "ApplicableVersion": "any",
-    "DalamudApiLevel": 14,
     "IsHide": false,
     "IsTestingExclusive": false,
     "DownloadLinkInstall": "https://github.com/ImOv3rburdened/LapCatCounter/releases/download/v1.0.24/latest.zip",
