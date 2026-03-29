@@ -1,5 +1,4 @@
-﻿using Dalamud.Game.ClientState.Objects.SubKinds;
-using LapCatCounter;
+using Dalamud.Game.ClientState.Objects.SubKinds;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -181,16 +180,19 @@ namespace LapCatCounter
                 currentLapSeconds += dt;
                 CurrentStatus = LapInteractionStatus.Ending;
 
-                EndLapSession();
-                if (evidence is null)
+                if (missingEvidenceSeconds >= cfg.SessionBreakGraceSeconds)
                 {
-                    ClearPending();
-                    CurrentLapKey = string.Empty;
-                    CurrentLapDisplayName = string.Empty;
-                    CurrentBestCandidateKey = null;
-                    CurrentRole = LapInteractionRole.None;
-                    CurrentStatus = LapInteractionStatus.None;
-                    currentLapStartedUtc = null;
+                    EndLapSession();
+                    if (evidence is null)
+                    {
+                        ClearPending();
+                        CurrentLapKey = string.Empty;
+                        CurrentLapDisplayName = string.Empty;
+                        CurrentBestCandidateKey = null;
+                        CurrentRole = LapInteractionRole.None;
+                        CurrentStatus = LapInteractionStatus.None;
+                        currentLapStartedUtc = null;
+                    }
                 }
 
                 if (debug.HasValue)
@@ -258,12 +260,12 @@ namespace LapCatCounter
 
         private CandidateEvidence? FindEvidenceFromSitOrder(IPlayerCharacter local, IEnumerable<IPlayerCharacter> others, EmoteHook emoteHook)
         {
-            if (emoteHook.TryGetRecentSitForInstigator(local.GameObjectId, cfg.SitEmoteId, cfg.GroundSitEmoteId, cfg.EmoteHookSeconds, out _))
-            {
-                var partner = FindClosestSeatedAnchorPartner(local, others, emoteHook);
-                if (partner is { } seatedPartner)
-                    return TryCreateRangeEvidence(local, seatedPartner, LapInteractionRole.SittingInOtherLap, "Local sat near seated partner");
-            }
+            bool localUsedSitRecently = emoteHook.TryGetRecentSitForInstigator(
+                local.GameObjectId,
+                cfg.SitEmoteId,
+                cfg.GroundSitEmoteId,
+                cfg.EmoteHookSeconds,
+                out _);
 
             if (IsSeatedAnchor(local, emoteHook)
                 && emoteHook.TryGetRecentObservedLapEvent(cfg.SitEmoteId, cfg.GroundSitEmoteId, cfg.EmoteHookSeconds, out var observed)
@@ -273,6 +275,13 @@ namespace LapCatCounter
                 var partner = others.FirstOrDefault(p => p.GameObjectId == observed.InstigatorObjectId);
                 if (partner != null)
                     return TryCreateRangeEvidence(local, partner, LapInteractionRole.OtherSittingInMyLap, "Partner sat near seated local");
+            }
+
+            if (localUsedSitRecently)
+            {
+                var partner = FindClosestSeatedAnchorPartner(local, others, emoteHook);
+                if (partner is { } seatedPartner)
+                    return TryCreateRangeEvidence(local, seatedPartner, LapInteractionRole.SittingInOtherLap, "Local sat near seated partner");
             }
 
             return null;
@@ -302,8 +311,7 @@ namespace LapCatCounter
         }
 
         private bool IsSeatedAnchor(IPlayerCharacter player, EmoteHook emoteHook)
-            => ActorStateReader.IsLapCompatibleState(player)
-               || emoteHook.TryGetRecentSitForInstigator(player.GameObjectId, cfg.SitEmoteId, cfg.GroundSitEmoteId, cfg.EmoteHookSeconds, out _);
+            => ActorStateReader.IsLapCompatibleState(player);
 
         private void StartLapSession(CandidateEvidence evidence, DateTime startedUtc)
         {
@@ -526,6 +534,9 @@ namespace LapCatCounter
         }
     }
 }
+
+
+
 
 
 

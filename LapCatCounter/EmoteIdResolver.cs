@@ -1,4 +1,4 @@
-﻿using Dalamud.Plugin.Services;
+using Dalamud.Plugin.Services;
 using System;
 using System.Collections;
 using System.Reflection;

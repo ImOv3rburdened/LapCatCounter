@@ -1,4 +1,4 @@
-﻿<Project Sdk="Dalamud.NET.Sdk/14.0.1">
+<Project Sdk="Dalamud.NET.Sdk/14.0.1">
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
@@ -6,9 +6,9 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-	<Version>1.0.22.0</Version>
-	<ProduceReferenceAssembly>false</ProduceReferenceAssembly>
-	<GenerateDependencyFile>false</GenerateDependencyFile>
+    <Version>1.0.22.0</Version>
+    <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
+    <GenerateDependencyFile>false</GenerateDependencyFile>
   </PropertyGroup>
 
   <ItemGroup>

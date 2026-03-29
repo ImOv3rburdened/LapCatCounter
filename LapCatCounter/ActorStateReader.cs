@@ -1,4 +1,4 @@
-﻿using Dalamud.Game.ClientState.Objects.SubKinds;
+using Dalamud.Game.ClientState.Objects.SubKinds;
 using FFXIVClientStructs.FFXIV.Client.Game.Character;
 
 namespace LapCatCounter;
@@ -30,18 +30,12 @@ public static unsafe class ActorStateReader
         => TryGetMode(player, out var mode, out _) && IsLapCompatibleState(mode);
 
     public static bool IsLapCompatibleState(CharacterModes mode)
-    {
-        if (mode is CharacterModes.EmoteLoop or CharacterModes.InPositionLoop)
-            return true;
-
-        var modeName = mode.ToString();
-        return modeName.Contains("Sit", System.StringComparison.OrdinalIgnoreCase)
-            || modeName.Contains("Chair", System.StringComparison.OrdinalIgnoreCase)
-            || modeName.Contains("Ground", System.StringComparison.OrdinalIgnoreCase);
-    }
+        => mode is CharacterModes.InPositionLoop;
 
     public static string Describe(IPlayerCharacter player)
         => TryGetMode(player, out var mode, out var modeParam)
             ? $"{mode} ({modeParam})"
             : "Unknown";
 }
+
+

@@ -1,4 +1,4 @@
-﻿using Dalamud.Game.ClientState.Objects.SubKinds;
+using Dalamud.Game.ClientState.Objects.SubKinds;
 using Dalamud.Hooking;
 using Dalamud.Plugin.Services;
 using Dalamud.Utility.Signatures;
@@ -93,19 +93,22 @@ public sealed unsafe class EmoteHook : IDisposable
                         targetIsLocal,
                         DateTime.UtcNow);
 
-                    LastObservedEvent = observed;
-
-                    if (instigator?.GameObjectId is > 0)
+                    if (IsLapSitEmote(emoteId, 50, 51))
                     {
-                        recentSitByInstigator[instigator.GameObjectId] = observed;
-                        PruneRecentSitEvents(observed.TimestampUtc);
-                    }
+                        LastObservedEvent = observed;
 
-                    if (instigatorIsLocal || targetIsLocal)
-                    {
-                        LastEmoteId = emoteId;
-                        LastEmoteUtc = observed.TimestampUtc;
-                        LastRelevantEvent = observed;
+                        if (instigator?.GameObjectId is > 0)
+                        {
+                            recentSitByInstigator[instigator.GameObjectId] = observed;
+                            PruneRecentSitEvents(observed.TimestampUtc);
+                        }
+
+                        if (instigatorIsLocal || targetIsLocal)
+                        {
+                            LastEmoteId = emoteId;
+                            LastEmoteUtc = observed.TimestampUtc;
+                            LastRelevantEvent = observed;
+                        }
                     }
                 }
             }
@@ -130,6 +133,14 @@ public sealed unsafe class EmoteHook : IDisposable
             recentSitByInstigator.Remove(key);
     }
 
+    private static bool IsLapSitEmote(ushort emoteId, ushort sitEmoteId, ushort groundSitEmoteId)
+    {
+        const ushort AlternateGroundSitEmoteId = 52;
+        return emoteId == sitEmoteId
+            || emoteId == groundSitEmoteId
+            || emoteId == AlternateGroundSitEmoteId;
+    }
+
     public bool TryGetRecentLapEvent(ushort sitEmoteId, ushort groundSitEmoteId, double seconds, out EmoteEvent emoteEvent)
     {
         emoteEvent = default;
@@ -137,7 +148,7 @@ public sealed unsafe class EmoteHook : IDisposable
         if (LastRelevantEvent is not { } evt)
             return false;
 
-        if (evt.EmoteId != sitEmoteId && evt.EmoteId != groundSitEmoteId)
+        if (!IsLapSitEmote(evt.EmoteId, sitEmoteId, groundSitEmoteId))
             return false;
 
         if ((DateTime.UtcNow - evt.TimestampUtc).TotalSeconds > seconds)
@@ -154,7 +165,7 @@ public sealed unsafe class EmoteHook : IDisposable
         if (LastObservedEvent is not { } evt)
             return false;
 
-        if (evt.EmoteId != sitEmoteId && evt.EmoteId != groundSitEmoteId)
+        if (!IsLapSitEmote(evt.EmoteId, sitEmoteId, groundSitEmoteId))
             return false;
 
         if ((DateTime.UtcNow - evt.TimestampUtc).TotalSeconds > seconds)
@@ -171,7 +182,7 @@ public sealed unsafe class EmoteHook : IDisposable
         if (objectId == 0 || !recentSitByInstigator.TryGetValue(objectId, out var evt))
             return false;
 
-        if (evt.EmoteId != sitEmoteId && evt.EmoteId != groundSitEmoteId)
+        if (!IsLapSitEmote(evt.EmoteId, sitEmoteId, groundSitEmoteId))
             return false;
 
         if ((DateTime.UtcNow - evt.TimestampUtc).TotalSeconds > seconds)
@@ -222,4 +233,6 @@ public sealed unsafe class EmoteHook : IDisposable
         HookReady = false;
     }
 }
+
+
 

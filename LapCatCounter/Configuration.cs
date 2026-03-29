@@ -1,4 +1,4 @@
-﻿using Dalamud.Configuration;
+using Dalamud.Configuration;
 using System;
 using System.Collections.Generic;
 
@@ -22,7 +22,7 @@ public sealed class Configuration : IPluginConfiguration
     public ushort SitEmoteId { get; set; } = 50;
     public ushort GroundSitEmoteId { get; set; } = 51;
     public float EmoteHookSeconds { get; set; } = 6.0f;
-    public float SessionBreakGraceSeconds { get; set; } = 0f;
+    public float SessionBreakGraceSeconds { get; set; } = 3.0f;
     public long TotalLapSeconds { get; set; } = 0;
     public long LongestLapSeconds { get; set; } = 0;
 
@@ -42,6 +42,7 @@ public sealed class Configuration : IPluginConfiguration
         public long TimeTheySatInMyLapSeconds { get; set; } = 0;
     }
 }
+
 
 
 

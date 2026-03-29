@@ -1,10 +1,9 @@
-ï»¿using Dalamud.Bindings.ImGui;
+using Dalamud.Bindings.ImGui;
 using Dalamud.Interface;
 using Dalamud.Interface.Colors;
 using Dalamud.Interface.Utility;
 using Dalamud.Interface.Utility.Raii;
 using Dalamud.Interface.Windowing;
-using LapCatCounter;
 using LapCatCounter;
 using System;
 using System.Globalization;
@@ -153,7 +152,7 @@ public sealed class MainWindow : Window
         ImGui.SetCursorPosX(titlePos.X + indentX);
         ImGui.SetCursorPosY(titlePos.Y + 38 * ImGuiHelpers.GlobalScale);
         ImGui.PushStyleColor(ImGuiCol.Text, ImGuiColors.DalamudGrey);
-        ImGui.TextUnformatted("Track laps you sit in â€¢ /lapcat to open â€¢ /lapcatcount to print totals â€¢ /lapdebug");
+        ImGui.TextUnformatted("Track laps you sit in • /lapcat to open • /lapcatcount to print totals • /lapdebug");
         ImGui.PopStyleColor();
     }
 
@@ -458,7 +457,7 @@ public sealed class MainWindow : Window
 
         ImGui.SameLine();
         ImGui.SetNextItemWidth(260 * ImGuiHelpers.GlobalScale);
-        ImGui.InputTextWithHint("##lapcat.search", "Name or keyâ€¦", ref search, 120);
+        ImGui.InputTextWithHint("##lapcat.search", "Name or key…", ref search, 120);
 
         ImGui.SameLine();
         bool onlyRecent = showOnlyRecent;
@@ -500,7 +499,7 @@ public sealed class MainWindow : Window
 
         ImGui.SameLine();
 
-        if (UiWidgets.SmallPillButton("Reset allâ€¦", ImGuiColors.DalamudRed))
+        if (UiWidgets.SmallPillButton("Reset all…", ImGuiColors.DalamudRed))
             openResetAllPopupThisFrame = true;
     }
 
@@ -707,7 +706,7 @@ public sealed class MainWindow : Window
     private static string FormatLastLap(DateTime utc)
     {
         if (utc == DateTime.MinValue)
-            return "â€”";
+            return "—";
 
         var now = DateTime.UtcNow;
         var delta = now - utc;

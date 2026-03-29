@@ -1,4 +1,4 @@
-﻿namespace LapCatCounter;
+namespace LapCatCounter;
 
 public enum LapInteractionRole
 {
