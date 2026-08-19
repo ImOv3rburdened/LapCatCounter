@@ -2,13 +2,14 @@ using Dalamud.Game.ClientState.Objects.SubKinds;
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using static LapCatCounter.Configuration;
+using LapCatCounter.Statistics;
 
 namespace LapCatCounter
 {
     public sealed class LapTracker
     {
         private readonly Configuration cfg;
+        private LapCatStatisticsManager? statisticsManager;
 
         private string pendingKey = string.Empty;
         private string pendingDisplayName = string.Empty;
@@ -35,8 +36,13 @@ namespace LapCatCounter
         public LapInteractionStatus CurrentStatus { get; private set; } = LapInteractionStatus.None;
         public DateTime? CurrentLapStartedUtc => currentLapStartedUtc;
         public TimeSpan CurrentLapTime => TimeSpan.FromSeconds(currentLapSeconds);
-        public TimeSpan TotalLapTime => accumulatedLapTime + TimeSpan.FromSeconds(currentLapSeconds);
-        public TimeSpan LongestLapTime => TimeSpan.FromSeconds(Math.Max(recordedLongestLapTime.TotalSeconds, currentLapSeconds));
+        public TimeSpan TotalLapTime => TimeSpan.FromSeconds(statisticsManager?.Statistics.TotalLapTimeSeconds ?? accumulatedLapTime.TotalSeconds)
+                                        + TimeSpan.FromSeconds(currentLapSeconds);
+        public TimeSpan LongestLapTime => TimeSpan.FromSeconds(Math.Max(
+            statisticsManager?.Statistics.LongestSessionSeconds ?? recordedLongestLapTime.TotalSeconds,
+            currentLapSeconds));
+        public event Action<LapSessionStarted>? SessionStarted;
+        public event Action<LapSessionEnded>? SessionEnded;
 
         public LapTracker(Configuration cfg)
         {
@@ -45,33 +51,24 @@ namespace LapCatCounter
             recordedLongestLapTime = TimeSpan.FromSeconds(cfg.LongestLapSeconds);
         }
 
-        public int TotalLaps => cfg.People.Values.Sum(p => p.LapCount);
-        public int UniquePeople => cfg.People.Count;
-        public int TotalTimesISatInTheirLaps => cfg.People.Values.Sum(p => p.TimesISatInTheirLap);
-        public int TotalTimesTheySatInMyLap => cfg.People.Values.Sum(p => p.TimesTheySatInMyLap);
-        public TimeSpan TotalTimeISatInTheirLaps => TimeSpan.FromSeconds(cfg.People.Values.Sum(p => p.TimeISatInTheirLapSeconds));
-        public TimeSpan TotalTimeTheySatInMyLap => TimeSpan.FromSeconds(cfg.People.Values.Sum(p => p.TimeTheySatInMyLapSeconds));
+        public int TotalLaps => ClampToInt(statisticsManager?.Statistics.TotalRawSessions ?? cfg.People.Values.Sum(p => (long)p.LapCount));
+        public int UniquePeople => statisticsManager?.Statistics.UniqueLapCats ?? cfg.People.Count;
+        public int TotalTimesISatInTheirLaps => ClampToInt(statisticsManager?.Statistics.TimesISatInTheirLaps ?? cfg.People.Values.Sum(p => (long)p.TimesISatInTheirLap));
+        public int TotalTimesTheySatInMyLap => ClampToInt(statisticsManager?.Statistics.TimesTheySatInMyLap ?? cfg.People.Values.Sum(p => (long)p.TimesTheySatInMyLap));
+        public TimeSpan TotalTimeISatInTheirLaps => TimeSpan.FromSeconds(statisticsManager?.Statistics.TimeISatInTheirLapsSeconds ?? cfg.People.Values.Sum(p => p.TimeISatInTheirLapSeconds));
+        public TimeSpan TotalTimeTheySatInMyLap => TimeSpan.FromSeconds(statisticsManager?.Statistics.TimeTheySatInMyLapSeconds ?? cfg.People.Values.Sum(p => p.TimeTheySatInMyLapSeconds));
+
+        public void AttachStatistics(LapCatStatisticsManager manager) => statisticsManager = manager;
 
         public int GetCountFor(string key)
-            => cfg.People.TryGetValue(key, out var s) ? s.LapCount : 0;
-
-        private PersonStats GetOrCreatePerson(string key, string displayName)
-        {
-            if (!cfg.People.TryGetValue(key, out var stats))
-            {
-                stats = new PersonStats { DisplayName = displayName, Key = key };
-                cfg.People[key] = stats;
-            }
-
-            if (!string.IsNullOrWhiteSpace(displayName))
-                stats.DisplayName = displayName;
-
-            stats.Key = key;
-            return stats;
-        }
+            => statisticsManager?.Statistics.Characters.TryGetValue(key, out var s) == true
+                ? ClampToInt(s.TotalRawSessions)
+                : cfg.People.TryGetValue(key, out var legacy) ? legacy.LapCount : 0;
 
         public void WriteTimeTotalsToConfig()
         {
+            if (statisticsManager is not null)
+                return;
             cfg.TotalLapSeconds = (long)TotalLapTime.TotalSeconds;
             cfg.LongestLapSeconds = (long)LongestLapTime.TotalSeconds;
         }
@@ -79,6 +76,8 @@ namespace LapCatCounter
         public void ResetAllTotals()
         {
             ResetCurrent();
+            if (statisticsManager is not null)
+                return;
             accumulatedLapTime = TimeSpan.Zero;
             recordedLongestLapTime = TimeSpan.Zero;
             cfg.TotalLapSeconds = 0;
@@ -88,6 +87,8 @@ namespace LapCatCounter
         public void RecalculateTotalsFromPeople()
         {
             EndLapSession();
+            if (statisticsManager is not null)
+                return;
 
             long totalSeconds = 0;
             long longestSeconds = 0;
@@ -106,7 +107,8 @@ namespace LapCatCounter
         }
 
         public IReadOnlyList<Configuration.PersonStats> TopPeople(int take = 200)
-            => cfg.People
+            => statisticsManager is null
+                ? cfg.People
                 .Select(kvp =>
                 {
                     kvp.Value.Key = kvp.Key;
@@ -115,7 +117,25 @@ namespace LapCatCounter
                 .OrderByDescending(p => p.LapCount)
                 .ThenBy(p => p.DisplayName, StringComparer.OrdinalIgnoreCase)
                 .Take(take)
-                .ToList();
+                .ToList()
+                : statisticsManager.Statistics.Characters
+                    .Select(kvp => new Configuration.PersonStats
+                    {
+                        Key = kvp.Key,
+                        DisplayName = kvp.Value.DisplayName,
+                        LapCount = ClampToInt(kvp.Value.TotalRawSessions),
+                        LastLapUtc = kvp.Value.LastSeenUtc ?? DateTime.MinValue,
+                        TotalLapSeconds = kvp.Value.TotalLapTimeSeconds,
+                        LongestLapSeconds = kvp.Value.LongestSessionSeconds,
+                        TimesISatInTheirLap = ClampToInt(kvp.Value.TimesISatInTheirLap),
+                        TimesTheySatInMyLap = ClampToInt(kvp.Value.TimesTheySatInMyLap),
+                        TimeISatInTheirLapSeconds = kvp.Value.TimeISatInTheirLapSeconds,
+                        TimeTheySatInMyLapSeconds = kvp.Value.TimeTheySatInMyLapSeconds,
+                    })
+                    .OrderByDescending(p => p.LapCount)
+                    .ThenBy(p => p.DisplayName, StringComparer.OrdinalIgnoreCase)
+                    .Take(take)
+                    .ToList();
 
         public void ResetCurrent()
         {
@@ -324,14 +344,7 @@ namespace LapCatCounter
             missingEvidenceSeconds = 0f;
             SyncCurrent(evidence.Key, evidence.DisplayName, evidence.Role);
 
-            var stats = GetOrCreatePerson(evidence.Key, evidence.DisplayName);
-            stats.LapCount += 1;
-            stats.LastLapUtc = DateTime.UtcNow;
-
-            if (evidence.Role == LapInteractionRole.SittingInOtherLap)
-                stats.TimesISatInTheirLap += 1;
-            else if (evidence.Role == LapInteractionRole.OtherSittingInMyLap)
-                stats.TimesTheySatInMyLap += 1;
+            SessionStarted?.Invoke(new LapSessionStarted(evidence.Key, evidence.DisplayName, evidence.Role, startedUtc));
         }
 
         private void EndLapSession()
@@ -340,22 +353,12 @@ namespace LapCatCounter
                 return;
 
             var lapDuration = TimeSpan.FromSeconds(currentLapSeconds);
-            accumulatedLapTime += lapDuration;
-
-            if (lapDuration > recordedLongestLapTime)
-                recordedLongestLapTime = lapDuration;
-
-            var stats = GetOrCreatePerson(lapSessionKey, lapSessionDisplayName);
-            var wholeSeconds = Math.Max(0L, (long)Math.Round(lapDuration.TotalSeconds));
-
-            stats.TotalLapSeconds += wholeSeconds;
-            if (wholeSeconds > stats.LongestLapSeconds)
-                stats.LongestLapSeconds = wholeSeconds;
-
-            if (lapSessionRole == LapInteractionRole.SittingInOtherLap)
-                stats.TimeISatInTheirLapSeconds += wholeSeconds;
-            else if (lapSessionRole == LapInteractionRole.OtherSittingInMyLap)
-                stats.TimeTheySatInMyLapSeconds += wholeSeconds;
+            SessionEnded?.Invoke(new LapSessionEnded(
+                lapSessionKey,
+                lapSessionDisplayName,
+                lapSessionRole,
+                lapDuration,
+                DateTime.UtcNow));
 
             lapActive = false;
             lapSessionKey = string.Empty;
@@ -373,9 +376,10 @@ namespace LapCatCounter
             LapInteractionRole role,
             string reason)
         {
-            var key = partner.Name.TextValue;
-            if (string.IsNullOrWhiteSpace(key))
+            var displayName = partner.Name.TextValue;
+            if (string.IsNullOrWhiteSpace(displayName))
                 return null;
+            var key = $"{displayName}@{partner.HomeWorld.RowId}";
 
             var dx = local.Position.X - partner.Position.X;
             var dz = local.Position.Z - partner.Position.Z;
@@ -399,7 +403,7 @@ namespace LapCatCounter
 
             return new CandidateEvidence(
                 key,
-                partner.Name.TextValue,
+                displayName,
                 partner.GameObjectId,
                 role,
                 dist3,
@@ -491,6 +495,8 @@ namespace LapCatCounter
             pendingStableSeconds = 0f;
         }
 
+        private static int ClampToInt(long value) => (int)Math.Clamp(value, 0, int.MaxValue);
+
         private readonly record struct CandidateEvidence(
             string Key,
             string DisplayName,
@@ -533,14 +539,20 @@ namespace LapCatCounter
             }
         }
     }
+
+    public readonly record struct LapSessionStarted(
+        string CharacterKey,
+        string DisplayName,
+        LapInteractionRole Role,
+        DateTime StartedUtc);
+
+    public readonly record struct LapSessionEnded(
+        string CharacterKey,
+        string DisplayName,
+        LapInteractionRole Role,
+        TimeSpan Duration,
+        DateTime EndedUtc);
 }
-
-
-
-
-
-
-
 
 
 

@@ -5,6 +5,8 @@ using Dalamud.Interface.Utility;
 using Dalamud.Interface.Utility.Raii;
 using Dalamud.Interface.Windowing;
 using LapCatCounter;
+using LapCatCounter.Achievements;
+using LapCatCounter.Statistics;
 using System;
 using System.Globalization;
 using System.Linq;
@@ -24,6 +26,7 @@ public sealed class MainWindow : Window
 
     private readonly Configuration cfg;
     private readonly LapTracker tracker;
+    private readonly LapCatStatisticsManager statisticsManager;
     private readonly Action save;
     private readonly EmoteHook? emoteHook;
     private readonly LapCatCounterPlugin plugin;
@@ -42,12 +45,15 @@ public sealed class MainWindow : Window
     private string? pendingResetKey;
     private DateTime? pendingResetAtUtc;
     private static bool resetModalOpen = true;
+    private bool selectAchievementsTab;
+    private string? focusedAchievementId;
 
-    public MainWindow(Configuration cfg, LapTracker tracker, Action save, EmoteHook emoteHook, LapCatCounterPlugin plugin)
+    public MainWindow(Configuration cfg, LapTracker tracker, LapCatStatisticsManager statisticsManager, Action save, EmoteHook emoteHook, LapCatCounterPlugin plugin)
         : base("Lap Cat Counter")
     {
         this.cfg = cfg;
         this.tracker = tracker;
+        this.statisticsManager = statisticsManager;
         this.save = save;
         this.emoteHook = emoteHook;
         this.plugin = plugin;
@@ -58,6 +64,13 @@ public sealed class MainWindow : Window
             MaximumSize = new Vector2(1200, 1000),
         };
         RespectCloseHotkey = true;
+    }
+
+    public void OpenAchievements(string? achievementId = null)
+    {
+        IsOpen = true;
+        selectAchievementsTab = true;
+        focusedAchievementId = achievementId;
     }
 
     public override void PreDraw()
@@ -83,35 +96,39 @@ public sealed class MainWindow : Window
         using var tabs = ImRaii.TabBar("lapcat.tabs", ImGuiTabBarFlags.None);
         if (tabs)
         {
-            if (ImGui.BeginTabItem("People"))
-            {
+            using (var tab = ImRaii.TabItem("People"))
+            if (tab)
                 DrawPeopleTab();
-                ImGui.EndTabItem();
-            }
 
-            if (ImGui.BeginTabItem("Directions"))
-            {
+            using (var tab = ImRaii.TabItem("Directions"))
+            if (tab)
                 DrawDirectionsTab();
-                ImGui.EndTabItem();
+
+            var achievementFlags = selectAchievementsTab ? ImGuiTabItemFlags.SetSelected : ImGuiTabItemFlags.None;
+            using (var tab = ImRaii.TabItem("Achievements", achievementFlags))
+            {
+                if (tab)
+                {
+                    selectAchievementsTab = false;
+                    DrawAchievementsTab();
+                }
             }
 
-            if (ImGui.BeginTabItem("Settings"))
-            {
+            using (var tab = ImRaii.TabItem("Statistics"))
+            if (tab)
+                DrawStatisticsTab();
+
+            using (var tab = ImRaii.TabItem("Settings"))
+            if (tab)
                 DrawSettingsTab();
-                ImGui.EndTabItem();
-            }
 
-            if (ImGui.BeginTabItem("About"))
-            {
+            using (var tab = ImRaii.TabItem("About"))
+            if (tab)
                 DrawAboutTab();
-                ImGui.EndTabItem();
-            }
 
-            if (ImGui.BeginTabItem("Debug"))
-            {
+            using (var tab = ImRaii.TabItem("Debug"))
+            if (tab)
                 DrawDebugTab();
-                ImGui.EndTabItem();
-            }
         }
 
         if (openResetPopupThisFrame)
@@ -152,7 +169,7 @@ public sealed class MainWindow : Window
         ImGui.SetCursorPosX(titlePos.X + indentX);
         ImGui.SetCursorPosY(titlePos.Y + 38 * ImGuiHelpers.GlobalScale);
         ImGui.PushStyleColor(ImGuiCol.Text, ImGuiColors.DalamudGrey);
-        ImGui.TextUnformatted("Track laps you sit in • /lapcat to open • /lapcatcount to print totals • /lapdebug");
+        ImGui.TextUnformatted("Track laps you sit in â€¢ /lapcat to open â€¢ /lapcatcount to print totals â€¢ /lapdebug");
         ImGui.PopStyleColor();
     }
 
@@ -457,7 +474,7 @@ public sealed class MainWindow : Window
 
         ImGui.SameLine();
         ImGui.SetNextItemWidth(260 * ImGuiHelpers.GlobalScale);
-        ImGui.InputTextWithHint("##lapcat.search", "Name or key…", ref search, 120);
+        ImGui.InputTextWithHint("##lapcat.search", "Name or keyâ€¦", ref search, 120);
 
         ImGui.SameLine();
         bool onlyRecent = showOnlyRecent;
@@ -465,12 +482,11 @@ public sealed class MainWindow : Window
             showOnlyRecent = onlyRecent;
 
         ImGui.SameLine();
-        ImGui.BeginDisabled(!showOnlyRecent);
+        using var disabled = ImRaii.Disabled(!showOnlyRecent);
         ImGui.SetNextItemWidth(90 * ImGuiHelpers.GlobalScale);
         int mins = recentMinutes;
         if (ImGui.InputInt("min", ref mins, 1, 10))
             recentMinutes = Math.Clamp(mins, 1, 60 * 24 * 7);
-        ImGui.EndDisabled();
 
         ImGui.SameLine();
         ImGui.Separator();
@@ -499,7 +515,7 @@ public sealed class MainWindow : Window
 
         ImGui.SameLine();
 
-        if (UiWidgets.SmallPillButton("Reset all…", ImGuiColors.DalamudRed))
+        if (UiWidgets.SmallPillButton("Reset allâ€¦", ImGuiColors.DalamudRed))
             openResetAllPopupThisFrame = true;
     }
 
@@ -567,7 +583,115 @@ public sealed class MainWindow : Window
             cfg.RequireSitEmote = require;
             save();
         }
+
+        bool notifications = cfg.ShowAchievementNotifications;
+        if (ImGui.Checkbox("Show Achievement Toasts", ref notifications))
+        {
+            cfg.ShowAchievementNotifications = notifications;
+            save();
+        }
+
+        ImGui.TextColored(ImGuiColors.DalamudGrey2,
+            "Controls only the popup toast. Achievements and clickable chat messages remain active.");
     }
+
+    private void DrawAchievementsTab()
+    {
+        ImGui.TextUnformatted("Achievements");
+        ImGui.Separator();
+        using var tabs = ImRaii.TabBar("lapcat.achievements.tabs");
+        if (!tabs)
+            return;
+
+        using (var unlockedTab = ImRaii.TabItem("Unlocked",
+                   focusedAchievementId is not null ? ImGuiTabItemFlags.SetSelected : ImGuiTabItemFlags.None))
+        {
+            if (unlockedTab)
+            {
+                foreach (var definition in statisticsManager.Achievements.Definitions)
+                    if (statisticsManager.Achievements.IsUnlocked(definition))
+                        DrawAchievement(definition, true);
+                focusedAchievementId = null;
+            }
+        }
+
+        using (var progressTab = ImRaii.TabItem("In Progress"))
+        {
+            if (progressTab)
+            {
+                foreach (var definition in statisticsManager.Achievements.Definitions)
+                    if (!statisticsManager.Achievements.IsUnlocked(definition))
+                        DrawAchievement(definition, false);
+            }
+        }
+    }
+
+    private void DrawAchievement(AchievementDefinition definition, bool unlocked)
+    {
+        using var id = ImRaii.PushId(definition.Id);
+        var unlockedUtc = statisticsManager.Achievements.GetUnlockedUtc(definition);
+        var isNew = unlockedUtc.HasValue && DateTime.UtcNow - unlockedUtc.Value <= TimeSpan.FromHours(2);
+        ImGui.TextUnformatted($"{(unlocked ? "âœ“ " : "ðŸ”’ ")}{definition.Name}{(isNew ? "  NEW" : "")}");
+        ImGui.TextColored(ImGuiColors.DalamudGrey2, definition.Description);
+
+        var progress = Math.Min(statisticsManager.Achievements.GetProgress(definition), definition.Target);
+        var progressText = definition.IsDuration
+            ? $"{UiWidgets.FormatDuration(TimeSpan.FromSeconds(progress))} / {UiWidgets.FormatDuration(TimeSpan.FromSeconds(definition.Target))}"
+            : $"{progress.ToString("N0", CultureInfo.InvariantCulture)} / {definition.Target.ToString("N0", CultureInfo.InvariantCulture)}";
+        ImGui.TextUnformatted(progressText);
+        if (unlockedUtc.HasValue)
+            ImGui.TextColored(ImGuiColors.HealerGreen, $"Unlocked {unlockedUtc.Value.ToLocalTime():MMM d, yyyy h:mm tt}");
+        if (string.Equals(focusedAchievementId, definition.Id, StringComparison.Ordinal))
+            ImGui.SetScrollHereY(0.5f);
+        ImGui.Separator();
+    }
+
+    private void DrawStatisticsTab()
+    {
+        var stats = statisticsManager.Statistics;
+        ImGui.TextUnformatted("Lifetime Statistics");
+        ImGui.Separator();
+        using (var table = ImRaii.Table("lapcat.statistics.summary", 2,
+                   ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH | ImGuiTableFlags.SizingStretchProp))
+        {
+            if (table)
+            {
+                ImGui.TableSetupColumn("Statistic", ImGuiTableColumnFlags.WidthStretch, 1.15f);
+                ImGui.TableSetupColumn("Value", ImGuiTableColumnFlags.WidthStretch, 1.85f);
+                DrawStatisticRow("Total Sits", stats.TotalRawSessions.ToString("N0", CultureInfo.InvariantCulture));
+                DrawStatisticRow("Achievement Sessions", stats.AchievementSessionCredits.ToString("N0", CultureInfo.InvariantCulture));
+                DrawStatisticRow("I Sat In Their Lap", stats.TimesISatInTheirLaps.ToString("N0", CultureInfo.InvariantCulture));
+                DrawStatisticRow("They Sat In My Lap", stats.TimesTheySatInMyLap.ToString("N0", CultureInfo.InvariantCulture));
+                DrawStatisticRow("Credited Visits", stats.CreditedVisits.ToString("N0", CultureInfo.InvariantCulture));
+                DrawStatisticRow("Unique LapCats", stats.UniqueLapCats.ToString("N0", CultureInfo.InvariantCulture));
+                DrawStatisticRow("Total Lap Time", UiWidgets.FormatDuration(TimeSpan.FromSeconds(stats.TotalLapTimeSeconds)));
+                DrawStatisticRow("Time In Their Laps", UiWidgets.FormatDuration(TimeSpan.FromSeconds(stats.TimeISatInTheirLapsSeconds)));
+                DrawStatisticRow("Time Hosting LapCats", UiWidgets.FormatDuration(TimeSpan.FromSeconds(stats.TimeTheySatInMyLapSeconds)));
+                DrawStatisticRow("Longest Session", UiWidgets.FormatDuration(TimeSpan.FromSeconds(stats.LongestSessionSeconds)));
+                DrawStatisticRow("Current Streak", $"{stats.CurrentStreak} day(s)");
+                DrawStatisticRow("Longest Streak", $"{stats.LongestStreak} day(s)");
+                DrawStatisticRow("Days With LapCats", stats.DaysWithLapCats.ToString("N0", CultureInfo.InvariantCulture));
+                DrawStatisticRow("First LapCat", FormatTimestamp(stats.FirstLapUtc));
+                DrawStatisticRow("Most Recent", FormatTimestamp(stats.MostRecentLapUtc));
+            }
+        }
+        ImGui.TextColored(ImGuiColors.DalamudGrey2,
+            "Session achievements can earn up to two credits per local calendar day. Total Sits still counts every real session.");
+    }
+
+    private static void DrawStatisticRow(string label, string value)
+    {
+        ImGui.TableNextRow();
+        ImGui.TableSetColumnIndex(0);
+        ImGui.TextColored(ImGuiColors.DalamudGrey, label);
+        ImGui.TableSetColumnIndex(1);
+        ImGui.TextWrapped(value);
+    }
+
+    private static string FormatTimestamp(DateTime? utc)
+        => utc.HasValue
+            ? utc.Value.ToLocalTime().ToString("MMM d, yyyy h:mm tt", CultureInfo.InvariantCulture)
+            : "Tracking begins with this update";
 
     private void DrawAboutTab()
     {
@@ -646,8 +770,9 @@ public sealed class MainWindow : Window
         {
             if (!string.IsNullOrWhiteSpace(pendingResetKey))
             {
-                cfg.People.Remove(pendingResetKey);
                 tracker.ResetCurrent();
+                cfg.People.Remove(pendingResetKey);
+                statisticsManager.ResetCharacter(pendingResetKey);
                 tracker.RecalculateTotalsFromPeople();
                 save();
             }
@@ -682,6 +807,7 @@ public sealed class MainWindow : Window
         {
             cfg.People.Clear();
             tracker.ResetAllTotals();
+            statisticsManager.ResetAll();
             save();
             ImGui.CloseCurrentPopup();
         }
@@ -706,7 +832,7 @@ public sealed class MainWindow : Window
     private static string FormatLastLap(DateTime utc)
     {
         if (utc == DateTime.MinValue)
-            return "—";
+            return "â€”";
 
         var now = DateTime.UtcNow;
         var delta = now - utc;
@@ -718,4 +844,3 @@ public sealed class MainWindow : Window
         return utc.ToLocalTime().ToString("MMM d, h:mm tt", CultureInfo.InvariantCulture);
     }
 }
-

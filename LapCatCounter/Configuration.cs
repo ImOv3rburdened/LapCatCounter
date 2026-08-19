@@ -6,7 +6,11 @@ namespace LapCatCounter;
 
 public sealed class Configuration : IPluginConfiguration
 {
-    public int Version { get; set; } = 3;
+    public int Version { get; set; } = 4;
+
+    // Achievement tracking is always active. This option controls notifications only.
+    public bool ShowAchievementNotifications { get; set; } = true;
+    public string StatisticsIntegritySecret { get; set; } = "";
 
     public float Radius { get; set; } = 1.15f;
     public float XYThreshold { get; set; } = 0.32f;
@@ -42,7 +46,6 @@ public sealed class Configuration : IPluginConfiguration
         public long TimeTheySatInMyLapSeconds { get; set; } = 0;
     }
 }
-
 
 
 

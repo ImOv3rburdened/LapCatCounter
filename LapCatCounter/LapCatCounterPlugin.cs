@@ -2,11 +2,17 @@ using Dalamud.Bindings.ImGui;
 using Dalamud.Game.ClientState.Objects.SubKinds;
 using Dalamud.Game.Command;
 using Dalamud.Game.Gui;
+using Dalamud.Game.Gui.Toast;
+using Dalamud.Game.Text.SeStringHandling;
+using Dalamud.Game.Text.SeStringHandling.Payloads;
 using Dalamud.Interface.Windowing;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
+using LapCatCounter.Achievements;
+using LapCatCounter.Statistics;
 using System;
 using System.Linq;
+using System.Collections.Generic;
 
 namespace LapCatCounter;
 
@@ -21,6 +27,7 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
     private readonly IChatGui chat;
     private readonly IPluginLog log;
     private readonly IClientState clientState;
+    private readonly IToastGui toast;
 
     private readonly WindowSystem ws = new("LapCatCounter");
 
@@ -28,6 +35,9 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
     private readonly LapTracker tracker;
     private readonly MainWindow window;
     private readonly EmoteHook emoteHook;
+    private readonly LapCatStatisticsManager statisticsManager;
+    private readonly Dictionary<string, DalamudLinkPayload> achievementLinks = new(StringComparer.Ordinal);
+    private const uint AchievementLinkCommandBase = 0x4C434100;
 
     internal bool DebugEnabled { get; private set; }
     internal bool DebugOverlayEnabled { get; set; } = true;
@@ -50,6 +60,7 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
         IFramework framework,
         IClientState clientState,
         IChatGui chatGui,
+        IToastGui toastGui,
         ISigScanner sigScanner,
         IPluginLog log,
         IDataManager dataManager,
@@ -62,10 +73,19 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
         chat = chatGui;
         this.clientState = clientState;
         this.log = log;
+        toast = toastGui;
 
         cfg = pi.GetPluginConfig() as Configuration ?? new Configuration();
         tracker = new LapTracker(cfg);
         bool changed = false;
+
+        if (cfg.Version < 4)
+        {
+            cfg.Version = 4;
+            // New boolean members retain their initializer when absent from old configuration JSON.
+            cfg.ShowAchievementNotifications = true;
+            changed = true;
+        }
 
         if (cfg.SitEmoteId == 0)
         {
@@ -104,8 +124,32 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
 
         emoteHook = new EmoteHook(interopProvider, objects, log);
 
-        window = new MainWindow(cfg, tracker, SaveConfig, emoteHook, this);
+        statisticsManager = new LapCatStatisticsManager(
+            pi.GetPluginConfigDirectory(),
+            cfg,
+            (message, exception) =>
+            {
+                if (exception is null)
+                    log.Warning(message);
+                else
+                    log.Warning(exception, message);
+            },
+            SaveConfig);
+        tracker.AttachStatistics(statisticsManager);
+        tracker.SessionStarted += OnSessionStarted;
+        tracker.SessionEnded += OnSessionEnded;
+        statisticsManager.AchievementUnlocked += OnAchievementUnlocked;
+
+        window = new MainWindow(cfg, tracker, statisticsManager, SaveConfig, emoteHook, this);
         ws.AddWindow(window);
+        for (var index = 0; index < statisticsManager.Achievements.Definitions.Count; index++)
+        {
+            var definition = statisticsManager.Achievements.Definitions[index];
+            var achievementId = definition.Id;
+            achievementLinks[achievementId] = chat.AddChatLinkHandler(
+                AchievementLinkCommandBase + (uint)index + 1,
+                (_, _) => window.OpenAchievements(achievementId));
+        }
 
         commands.AddHandler("/lapcat", new CommandInfo((_, _) => window.IsOpen = true)
         {
@@ -139,6 +183,34 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
     {
         tracker.WriteTimeTotalsToConfig();
         pi.SavePluginConfig(cfg);
+    }
+
+    private void OnSessionStarted(LapSessionStarted session)
+        => statisticsManager.SessionStarted(session.CharacterKey, session.DisplayName, session.Role, session.StartedUtc, DateTime.Now);
+
+    private void OnSessionEnded(LapSessionEnded session)
+        => statisticsManager.SessionEnded(session.CharacterKey, session.DisplayName, session.Role, session.Duration, session.EndedUtc);
+
+    private void OnAchievementUnlocked(AchievementDefinition achievement)
+    {
+        if (cfg.ShowAchievementNotifications)
+        {
+            toast.ShowQuest($"Achievement Unlocked!\n🐱 {achievement.Name}\n{achievement.Description}", new QuestToastOptions
+            {
+                DisplayCheckmark = true,
+                PlaySound = true,
+            });
+        }
+
+        var message = new SeStringBuilder()
+            .AddText($"[Lap Cat Counter] Achievement Unlocked! 🐱 {achievement.Name} — ")
+            .Add(achievementLinks[achievement.Id])
+            .AddUiForeground(45)
+            .AddText("Click here to view achievements")
+            .AddUiForegroundOff()
+            .Add(RawPayload.LinkTerminator)
+            .Build();
+        chat.Print(message);
     }
 
     private void OnLapDebugCommand(string cmd, string args)
@@ -199,7 +271,6 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
 
         tracker.Update(dt, local, others, emoteHook, () =>
         {
-            SaveConfig();
             var who = tracker.CurrentLapDisplayName;
             var countOnThem = tracker.GetCountFor(tracker.CurrentLapKey);
 
@@ -272,6 +343,8 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
 
     public void Dispose()
     {
+        tracker.ResetCurrent();
+        statisticsManager.Save();
         SaveConfig();
         framework.Update -= OnUpdate;
         pi.UiBuilder.Draw -= Draw;
@@ -279,9 +352,13 @@ public sealed class LapCatCounterPlugin : IDalamudPlugin
         commands.RemoveHandler("/lapcat");
         commands.RemoveHandler("/lapcatcount");
         commands.RemoveHandler("/lapdebug");
+        chat.RemoveChatLinkHandler();
+
+        tracker.SessionStarted -= OnSessionStarted;
+        tracker.SessionEnded -= OnSessionEnded;
+        statisticsManager.AchievementUnlocked -= OnAchievementUnlocked;
 
         ws.RemoveAllWindows();
         emoteHook.Dispose();
     }
 }
-
